@@ -1022,6 +1022,32 @@ function Get-ToastConnectionString {
     return $builder.ConnectionString
 }
 
+function Get-ToastSqlCredential {
+    param([hashtable]$Config)
+
+    if (-not $Config.ContainsKey('UseIntegratedSecurity')) {
+        throw 'Config setting UseIntegratedSecurity is required.'
+    }
+
+    if ($Config['UseIntegratedSecurity']) {
+        return $null
+    }
+
+    if (-not $Config.ContainsKey('SqlCredential') -or $null -eq $Config['SqlCredential']) {
+        throw 'Config setting SqlCredential is required when UseIntegratedSecurity = $false.'
+    }
+
+    $values = Get-ToastSqlCredentialValues -SqlCredential $Config['SqlCredential']
+
+    $securePassword = [System.Security.SecureString]::new()
+    foreach ($character in $values.Password.ToCharArray()) {
+        $securePassword.AppendChar($character)
+    }
+    $securePassword.MakeReadOnly()
+
+    return [System.Data.SqlClient.SqlCredential]::new($values.UserName, $securePassword)
+}
+
 function Add-ToastSqlParameter {
     param(
         [Parameter(Mandatory)][System.Data.SqlClient.SqlCommand]$Command,
