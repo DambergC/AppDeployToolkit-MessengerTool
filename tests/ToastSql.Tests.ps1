@@ -1484,8 +1484,9 @@ function Show-InstallationPrompt {
             $installScriptText | Should -Match "VALUES \(N'AppLogoPath'\), \(N'HeroImagePath'\), \(N'AppLogoBytes'\), \(N'AppLogoContentType'\), \(N'HeroImageBytes'\), \(N'HeroImageContentType'\)"
             $installScriptText | Should -Match 'Back up the database'
 
-            InModuleScope ToastSql {
-                foreach ($columnName in @('AppLogoPath', 'HeroImagePath', 'AppLogoBytes', 'AppLogoContentType', 'HeroImageBytes', 'HeroImageContentType')) {
+            InModuleScope ToastSql -Parameters @{ Columns = $obsoleteImageColumns } {
+                param($Columns)
+                foreach ($columnName in $Columns) {
                     $script:ToastSqlNullParameterDefinitions.ContainsKey($columnName) | Should -BeFalse
                 }
                 $script:ToastSqlNullParameterDefinitions.ContainsKey('Sound') | Should -BeTrue

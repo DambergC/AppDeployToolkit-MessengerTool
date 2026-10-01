@@ -486,86 +486,100 @@ DECLARE @ObsoleteToastImageColumns TABLE (ColumnName sysname NOT NULL PRIMARY KE
 INSERT @ObsoleteToastImageColumns (ColumnName)
 VALUES (N'AppLogoPath'), (N'HeroImagePath'), (N'AppLogoBytes'), (N'AppLogoContentType'), (N'HeroImageBytes'), (N'HeroImageContentType');
 
-IF EXISTS (
-    SELECT 1
-    FROM sys.columns c
-    INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
-    WHERE c.object_id = OBJECT_ID('dbo.ToastMessage')
-)
-BEGIN
-    DECLARE @DropObsoleteImageDependenciesSql nvarchar(max) = N'';
+-- Dependency drops, column drops and index recreation run atomically so a failure
+-- never leaves dbo.ToastMessage without IX_ToastMessage_Polling.
+BEGIN TRY
+    BEGIN TRAN;
 
-    -- 1. Indexes (for example IX_ToastMessage_Polling) that key or include an obsolete image column.
-    SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
-        + N'DROP INDEX ' + QUOTENAME(i.name) + N' ON dbo.ToastMessage;' + NCHAR(10)
-    FROM sys.indexes i
-    WHERE i.object_id = OBJECT_ID('dbo.ToastMessage')
-      AND i.is_primary_key = 0
-      AND i.is_unique_constraint = 0
-      AND i.name IS NOT NULL
-      AND EXISTS (
-          SELECT 1
-          FROM sys.index_columns ic
-          INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
-          INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
-          WHERE ic.object_id = i.object_id
-            AND ic.index_id = i.index_id
-      );
+    IF EXISTS (
+        SELECT 1
+        FROM sys.columns c
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE c.object_id = OBJECT_ID('dbo.ToastMessage')
+    )
+    BEGIN
+        DECLARE @DropObsoleteImageDependenciesSql nvarchar(max) = N'';
 
-    -- 2. Default and check constraints bound to an obsolete image column.
-    SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
-        + N'ALTER TABLE dbo.ToastMessage DROP CONSTRAINT ' + QUOTENAME(dc.name) + N';' + NCHAR(10)
-    FROM sys.default_constraints dc
-    INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
-    INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
-    WHERE dc.parent_object_id = OBJECT_ID('dbo.ToastMessage');
+        -- 1. Indexes (for example IX_ToastMessage_Polling) that key or include an obsolete image column.
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'DROP INDEX ' + QUOTENAME(i.name) + N' ON dbo.ToastMessage;' + NCHAR(10)
+        FROM sys.indexes i
+        WHERE i.object_id = OBJECT_ID('dbo.ToastMessage')
+          AND i.is_primary_key = 0
+          AND i.is_unique_constraint = 0
+          AND i.name IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM sys.index_columns ic
+              INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+              INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+              WHERE ic.object_id = i.object_id
+                AND ic.index_id = i.index_id
+          );
 
-    SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
-        + N'ALTER TABLE dbo.ToastMessage DROP CONSTRAINT ' + QUOTENAME(cc.name) + N';' + NCHAR(10)
-    FROM sys.check_constraints cc
-    INNER JOIN sys.columns c ON c.object_id = cc.parent_object_id AND c.column_id = cc.parent_column_id
-    INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
-    WHERE cc.parent_object_id = OBJECT_ID('dbo.ToastMessage');
+        -- 2. Default and check constraints bound to an obsolete image column.
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'ALTER TABLE dbo.ToastMessage DROP CONSTRAINT ' + QUOTENAME(dc.name) + N';' + NCHAR(10)
+        FROM sys.default_constraints dc
+        INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE dc.parent_object_id = OBJECT_ID('dbo.ToastMessage');
 
-    -- 3. User-created statistics on an obsolete image column.
-    SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
-        + N'DROP STATISTICS dbo.ToastMessage.' + QUOTENAME(s.name) + N';' + NCHAR(10)
-    FROM sys.stats s
-    WHERE s.object_id = OBJECT_ID('dbo.ToastMessage')
-      AND s.user_created = 1
-      AND EXISTS (
-          SELECT 1
-          FROM sys.stats_columns sc
-          INNER JOIN sys.columns c ON c.object_id = sc.object_id AND c.column_id = sc.column_id
-          INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
-          WHERE sc.object_id = s.object_id
-            AND sc.stats_id = s.stats_id
-      );
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'ALTER TABLE dbo.ToastMessage DROP CONSTRAINT ' + QUOTENAME(cc.name) + N';' + NCHAR(10)
+        FROM sys.check_constraints cc
+        INNER JOIN sys.columns c ON c.object_id = cc.parent_object_id AND c.column_id = cc.parent_column_id
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE cc.parent_object_id = OBJECT_ID('dbo.ToastMessage');
 
-    IF LEN(@DropObsoleteImageDependenciesSql) > 0
-        EXEC sp_executesql @DropObsoleteImageDependenciesSql;
+        -- 3. User-created statistics on an obsolete image column.
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'DROP STATISTICS dbo.ToastMessage.' + QUOTENAME(s.name) + N';' + NCHAR(10)
+        FROM sys.stats s
+        WHERE s.object_id = OBJECT_ID('dbo.ToastMessage')
+          AND s.user_created = 1
+          AND EXISTS (
+              SELECT 1
+              FROM sys.stats_columns sc
+              INNER JOIN sys.columns c ON c.object_id = sc.object_id AND c.column_id = sc.column_id
+              INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+              WHERE sc.object_id = s.object_id
+                AND sc.stats_id = s.stats_id
+          );
 
-    -- 4. Drop the obsolete image columns themselves.
-    DECLARE @DropObsoleteImageColumnsSql nvarchar(max) = N'';
-    SELECT @DropObsoleteImageColumnsSql = @DropObsoleteImageColumnsSql
-        + N'ALTER TABLE dbo.ToastMessage DROP COLUMN ' + QUOTENAME(c.name) + N';' + NCHAR(10)
-    FROM sys.columns c
-    INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
-    WHERE c.object_id = OBJECT_ID('dbo.ToastMessage');
+        IF LEN(@DropObsoleteImageDependenciesSql) > 0
+            EXEC sp_executesql @DropObsoleteImageDependenciesSql;
 
-    IF LEN(@DropObsoleteImageColumnsSql) > 0
-        EXEC sp_executesql @DropObsoleteImageColumnsSql;
-END;
+        -- 4. Drop the obsolete image columns themselves.
+        DECLARE @DropObsoleteImageColumnsSql nvarchar(max) = N'';
+        SELECT @DropObsoleteImageColumnsSql = @DropObsoleteImageColumnsSql
+            + N'ALTER TABLE dbo.ToastMessage DROP COLUMN ' + QUOTENAME(c.name) + N';' + NCHAR(10)
+        FROM sys.columns c
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE c.object_id = OBJECT_ID('dbo.ToastMessage');
 
--- Recreate the polling index without image columns when it was dropped above (or is missing).
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.ToastMessage') AND name = 'IX_ToastMessage_Polling')
-    CREATE INDEX IX_ToastMessage_Polling
-        ON dbo.ToastMessage(MessageId)
-        INCLUDE (
-            IsCancelled, ExpiresUtc, Title, Body,
-            Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount,
-            ButtonText, ButtonArguments, ButtonActivationType, Scenario, DisplayMode
-        );
+        IF LEN(@DropObsoleteImageColumnsSql) > 0
+            EXEC sp_executesql @DropObsoleteImageColumnsSql;
+    END;
+
+    -- Recreate the polling index without image columns when it was dropped above (or is missing).
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.ToastMessage') AND name = 'IX_ToastMessage_Polling')
+        CREATE INDEX IX_ToastMessage_Polling
+            ON dbo.ToastMessage(MessageId)
+            INCLUDE (
+                IsCancelled, ExpiresUtc, Title, Body,
+                Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount,
+                ButtonText, ButtonArguments, ButtonActivationType, Scenario, DisplayMode
+            );
+
+    COMMIT;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK;
+
+    THROW;
+END CATCH;
 
 GO
 CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
