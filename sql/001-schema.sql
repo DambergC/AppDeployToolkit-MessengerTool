@@ -166,7 +166,7 @@ BEGIN
     IF @ButtonText IS NOT NULL AND @ButtonActivationType IS NULL
         SET @ButtonActivationType = 'Protocol';
 
-    IF @AcknowledgeButtonText IS NOT NULL AND @ButtonText IS NOT NULL AND @AcknowledgeButtonText = @ButtonText
+    IF @AcknowledgeButtonText IS NOT NULL AND @ButtonText IS NOT NULL AND UPPER(@AcknowledgeButtonText) = UPPER(@ButtonText)
         THROW 50032, 'AcknowledgeButtonText must differ from ButtonText.', 1;
 
     IF @ButtonActivationType IS NOT NULL AND @ButtonActivationType NOT IN ('Protocol','Dismiss')
