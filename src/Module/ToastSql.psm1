@@ -752,13 +752,11 @@ function Invoke-ToastProtocolAction {
         [Parameter(Mandatory)][string]$ButtonArguments
     )
 
+    $launchTarget = $null
     try {
-        $protocolUri = Resolve-ToastProtocolUri -ButtonArguments $ButtonArguments
-        if ($null -eq $protocolUri) {
-            throw 'Protocol actions support only absolute http, https, or mailto URIs (raw URL or JSON {"url":"..."}).'
-        }
-
-        $launchTarget = $protocolUri.AbsoluteUri
+        # ConvertTo-ToastProtocolUrl throws a descriptive error (malformed JSON, missing url, unsupported scheme).
+        $protocolUrl = ConvertTo-ToastProtocolUrl -ButtonArguments $ButtonArguments
+        $launchTarget = ([System.Uri]::new($protocolUrl, [System.UriKind]::Absolute)).AbsoluteUri
 
         if (Test-ToastInteractiveUserSession) {
             # Already in the user's session: let the shell open the URL with the default browser/handler.
@@ -784,7 +782,11 @@ function Invoke-ToastProtocolAction {
         return $null
     } catch {
         $launchError = $_.Exception.Message
-        Write-Warning "Failed to open protocol action '$ButtonArguments': $launchError"
+        $loggedArguments = if ($null -ne $launchTarget) { $launchTarget } else { [string]$ButtonArguments }
+        if ($loggedArguments.Length -gt 200) {
+            $loggedArguments = $loggedArguments.Substring(0, 200) + '...'
+        }
+        Write-Warning "Failed to open protocol action '$loggedArguments': $launchError"
         return $launchError
     }
 }

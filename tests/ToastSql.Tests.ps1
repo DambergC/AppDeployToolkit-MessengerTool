@@ -432,9 +432,11 @@ Describe 'ToastSql module' {
                 Mock Start-Process {}
 
                 try {
-                    foreach ($invalidUri in @('/intranet/status', 'www.contoso.com', 'ftp://files.example.com/file', '{"url":"ftp://files.example.com/file"}', '{"url":')) {
+                    foreach ($invalidUri in @('/intranet/status', 'www.contoso.com', 'ftp://files.example.com/file', '{"url":"ftp://files.example.com/file"}')) {
                         (Invoke-ToastProtocolAction -ButtonArguments $invalidUri) | Should -Match 'http, https, or mailto'
                     }
+                    (Invoke-ToastProtocolAction -ButtonArguments '{"url":') | Should -Match 'malformed JSON'
+                    (Invoke-ToastProtocolAction -ButtonArguments '{"link":"https://example.com"}') | Should -Match "non-empty string 'url'"
                     Should -Invoke Start-ADTProcessAsUser -Times 0
                     Should -Invoke Start-Process -Times 0
                 } finally {
