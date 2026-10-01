@@ -5,15 +5,6 @@ param(
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Title,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Body,
     [datetime]$ExpiresUtc,
-    [string]$AppLogoPath,
-    [string]$HeroImagePath,
-    [string]$AppLogoFilePath,
-    [string]$HeroImageFilePath,
-    [byte[]]$AppLogoBytes,
-    [byte[]]$HeroImageBytes,
-    [string]$AppLogoContentType,
-    [string]$HeroImageContentType,
-    [ValidateSet('Default','IM','Mail','Reminder','SMS','Alarm','Alarm2','Alarm3','Alarm4','Alarm5','Alarm6','Alarm7','Alarm8','Alarm9','Alarm10','Call','Call2','Call3','Call4','Call5','Call6','Call7','Call8','Call9','Call10')][string]$Sound,
     [switch]$Urgent,
     [Nullable[int]]$RepeatIntervalSeconds,
     [Nullable[int]]$RepeatIntervalMinutes,
@@ -88,24 +79,6 @@ function Resolve-ToastQueueResult {
     }
 }
 
-function Assert-ToastImageResolutionResult {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]$Result,
-        [Parameter(Mandatory)][string]$ParameterName
-    )
-
-    if ($null -eq $Result) {
-        throw "$ParameterName image resolution returned no value."
-    }
-
-    $hasImageBytes = $null -ne $Result.PSObject.Properties['ImageBytes']
-    $hasContentType = $null -ne $Result.PSObject.Properties['ContentType']
-    if (-not $hasImageBytes -or -not $hasContentType) {
-        throw "$ParameterName image resolution must return ImageBytes and ContentType values."
-    }
-}
-
 $config = Import-ToastConfig -Path $ConfigPath -RequiredProperties @(
     'SqlServer','SqlDatabase','SqlPort','UseIntegratedSecurity','Encrypt',
     'TrustServerCertificate','ConnectTimeoutSeconds','CommandTimeoutSeconds'
@@ -131,41 +104,11 @@ if (-not [string]::IsNullOrWhiteSpace([string]$ButtonActivationType)) {
 
 $buttonSettings = Resolve-ToastButtonSettings @buttonParams
 
-$soundValue = if (
-    $PSBoundParameters.ContainsKey('Sound') -and
-    -not [string]::IsNullOrWhiteSpace([string]$Sound)
-) {
-    [string]$Sound
-} else {
-    $null
-}
-
-$resolvedAppLogo = Resolve-ToastImageInput `
-    -FilePath $AppLogoFilePath `
-    -ImageBytes $AppLogoBytes `
-    -ContentType $AppLogoContentType `
-    -ParameterName 'AppLogo'
-Assert-ToastImageResolutionResult -Result $resolvedAppLogo -ParameterName 'AppLogo'
-
-$resolvedHeroImage = Resolve-ToastImageInput `
-    -FilePath $HeroImageFilePath `
-    -ImageBytes $HeroImageBytes `
-    -ContentType $HeroImageContentType `
-    -ParameterName 'HeroImage'
-Assert-ToastImageResolutionResult -Result $resolvedHeroImage -ParameterName 'HeroImage'
-
 $params = @{
     GroupName = $GroupName
     Title = $Title
     Body = $Body
     ExpiresUtc = if ($ExpiresUtc) { $ExpiresUtc } else { $null }
-    AppLogoPath = if ([string]::IsNullOrWhiteSpace([string]$AppLogoPath)) { $null } else { [string]$AppLogoPath }
-    HeroImagePath = if ([string]::IsNullOrWhiteSpace([string]$HeroImagePath)) { $null } else { [string]$HeroImagePath }
-    AppLogoBytes = $resolvedAppLogo.ImageBytes
-    AppLogoContentType = $resolvedAppLogo.ContentType
-    HeroImageBytes = $resolvedHeroImage.ImageBytes
-    HeroImageContentType = $resolvedHeroImage.ContentType
-    Sound = $soundValue
     IsUrgent = $Urgent.IsPresent
     RepeatIntervalSeconds = if ($null -ne $repeatSettings) { $repeatSettings.RepeatIntervalSeconds } else { $null }
     RepeatCount = if ($null -ne $repeatSettings) { $repeatSettings.RepeatCount } else { $null }
@@ -177,9 +120,8 @@ $params = @{
 }
 
 foreach ($parameterName in @(
-    'GroupName','Title','Body','ExpiresUtc','AppLogoPath','HeroImagePath',
-    'AppLogoBytes','AppLogoContentType','HeroImageBytes','HeroImageContentType',
-    'Sound','IsUrgent','RepeatIntervalSeconds','RepeatCount',
+    'GroupName','Title','Body','ExpiresUtc',
+    'IsUrgent','RepeatIntervalSeconds','RepeatCount',
     'ButtonText','ButtonArguments','ButtonActivationType','Scenario','DisplayMode'
 )) {
     if (-not $params.ContainsKey($parameterName)) {
@@ -193,13 +135,6 @@ EXEC dbo.usp_QueueToastMessage
     @Title = @Title,
     @Body = @Body,
     @ExpiresUtc = @ExpiresUtc,
-    @AppLogoPath = @AppLogoPath,
-    @HeroImagePath = @HeroImagePath,
-    @AppLogoBytes = @AppLogoBytes,
-    @AppLogoContentType = @AppLogoContentType,
-    @HeroImageBytes = @HeroImageBytes,
-    @HeroImageContentType = @HeroImageContentType,
-    @Sound = @Sound,
     @IsUrgent = @IsUrgent,
     @RepeatIntervalSeconds = @RepeatIntervalSeconds,
     @RepeatCount = @RepeatCount,
