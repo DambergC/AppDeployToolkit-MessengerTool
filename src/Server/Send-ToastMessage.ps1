@@ -11,7 +11,7 @@ param(
     [Nullable[int]]$RepeatIntervalMinutes,
     [Nullable[int]]$RepeatCount,
     [Parameter(HelpMessage='Optional text shown on the extra action button to the left of the acknowledgement button.')][string]$ButtonText,
-    [Parameter(HelpMessage='Optional button argument. For Protocol buttons use an absolute http, https, or mailto URI that opens in the default application/browser.')][string]$ButtonArguments,
+    [Parameter(HelpMessage='Optional button argument. For Protocol buttons use an absolute http, https, or mailto URL, either raw or as JSON {"url":"https://..."}; it opens in the default browser/application of the logged-on user.')][string]$ButtonArguments,
     [Parameter(HelpMessage='Button activation type. Use Protocol to open a URI or Dismiss to close the toast.')][ValidateSet('Protocol','Dismiss')][string]$ButtonActivationType,
     [Parameter(HelpMessage='Optional text shown on the right acknowledgement button. Defaults to Acknowledge.')][AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText,
     [ValidateSet('Default','Reminder','Alarm','IncomingCall')][string]$Scenario = 'Default',

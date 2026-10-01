@@ -3,6 +3,9 @@
    Safe for both new installations and upgrades.
    Creates missing base tables/indexes and then applies the
    repeat, button/display-mode, and local-time reporting updates.
+   WARNING: upgrades permanently drop the obsolete image columns
+   (AppLogoPath, HeroImagePath, AppLogoBytes, AppLogoContentType,
+   HeroImageBytes, HeroImageContentType). Back up the database first.
    ========================================================= */
 
 SET NOCOUNT ON;
@@ -55,12 +58,6 @@ BEGIN
         CreatedUtc              datetime2(0) NOT NULL CONSTRAINT DF_ToastMessage_CreatedUtc DEFAULT (SYSDATETIME()),
         ExpiresUtc              datetime2(0) NULL,
         IsCancelled             bit NOT NULL CONSTRAINT DF_ToastMessage_IsCancelled DEFAULT (0),
-        AppLogoPath             nvarchar(1024) NULL,
-        HeroImagePath           nvarchar(1024) NULL,
-        AppLogoBytes            varbinary(max) NULL,
-        AppLogoContentType      varchar(100) NULL,
-        HeroImageBytes          varbinary(max) NULL,
-        HeroImageContentType    varchar(100) NULL,
         Sound                   varchar(20) NULL,
         IsUrgent                bit NOT NULL CONSTRAINT DF_ToastMessage_IsUrgent DEFAULT (0),
         RepeatIntervalSeconds   int NULL,
@@ -111,7 +108,6 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.ToastM
         ON dbo.ToastMessage(MessageId)
         INCLUDE (
             IsCancelled, ExpiresUtc, Title, Body,
-            AppLogoPath, HeroImagePath, AppLogoBytes, AppLogoContentType, HeroImageBytes, HeroImageContentType,
             Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount,
             ButtonText, ButtonArguments, ButtonActivationType, Scenario, DisplayMode
         );
@@ -170,24 +166,6 @@ IF @ServerLocalTimeZone IS NULL
 BEGIN
     SET @ServerLocalTimeZone = N'UTC';
 END;
-
-IF COL_LENGTH('dbo.ToastMessage', 'AppLogoPath') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD AppLogoPath nvarchar(1024) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'HeroImagePath') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD HeroImagePath nvarchar(1024) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'AppLogoBytes') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD AppLogoBytes varbinary(max) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'AppLogoContentType') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD AppLogoContentType varchar(100) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'HeroImageBytes') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD HeroImageBytes varbinary(max) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'HeroImageContentType') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD HeroImageContentType varchar(100) NULL;
 
 IF COL_LENGTH('dbo.ToastMessage', 'Sound') IS NULL
     ALTER TABLE dbo.ToastMessage ADD Sound varchar(20) NULL;
@@ -320,7 +298,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.ToastD
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.ToastMessage') AND name = 'IX_ToastMessage_Polling')
     CREATE INDEX IX_ToastMessage_Polling
         ON dbo.ToastMessage(MessageId)
-        INCLUDE (IsCancelled, ExpiresUtc, Title, Body, AppLogoPath, HeroImagePath, Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount);
+        INCLUDE (IsCancelled, ExpiresUtc, Title, Body, Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount);
 
 GO
 
@@ -444,18 +422,6 @@ IF COL_LENGTH('dbo.ToastMessage', 'ButtonArguments') IS NULL
 IF COL_LENGTH('dbo.ToastMessage', 'ButtonActivationType') IS NULL
     ALTER TABLE dbo.ToastMessage ADD ButtonActivationType varchar(20) NULL;
 
-IF COL_LENGTH('dbo.ToastMessage', 'AppLogoBytes') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD AppLogoBytes varbinary(max) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'AppLogoContentType') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD AppLogoContentType varchar(100) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'HeroImageBytes') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD HeroImageBytes varbinary(max) NULL;
-
-IF COL_LENGTH('dbo.ToastMessage', 'HeroImageContentType') IS NULL
-    ALTER TABLE dbo.ToastMessage ADD HeroImageContentType varchar(100) NULL;
-
 IF COL_LENGTH('dbo.ToastMessage', 'Scenario') IS NULL
     ALTER TABLE dbo.ToastMessage ADD Scenario varchar(20) NULL;
 
@@ -508,17 +474,119 @@ IF EXISTS (
         ALTER COLUMN DisplayMode varchar(20) NOT NULL;
 
 GO
+
+/* ===== Remove obsolete image columns from dbo.ToastMessage =====
+   WARNING: permanently deletes AppLogoPath, HeroImagePath, AppLogoBytes,
+   AppLogoContentType, HeroImageBytes and HeroImageContentType data.
+   Back up the database before running this upgrade. Safe to rerun. */
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @ObsoleteToastImageColumns TABLE (ColumnName sysname NOT NULL PRIMARY KEY);
+INSERT @ObsoleteToastImageColumns (ColumnName)
+VALUES (N'AppLogoPath'), (N'HeroImagePath'), (N'AppLogoBytes'), (N'AppLogoContentType'), (N'HeroImageBytes'), (N'HeroImageContentType');
+
+-- Dependency drops, column drops and index recreation run atomically so a failure
+-- never leaves dbo.ToastMessage without IX_ToastMessage_Polling.
+BEGIN TRY
+    BEGIN TRAN;
+
+    IF EXISTS (
+        SELECT 1
+        FROM sys.columns c
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE c.object_id = OBJECT_ID('dbo.ToastMessage')
+    )
+    BEGIN
+        DECLARE @DropObsoleteImageDependenciesSql nvarchar(max) = N'';
+
+        -- 1. Indexes (for example IX_ToastMessage_Polling) that key or include an obsolete image column.
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'DROP INDEX ' + QUOTENAME(i.name) + N' ON dbo.ToastMessage;' + NCHAR(10)
+        FROM sys.indexes i
+        WHERE i.object_id = OBJECT_ID('dbo.ToastMessage')
+          AND i.is_primary_key = 0
+          AND i.is_unique_constraint = 0
+          AND i.name IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM sys.index_columns ic
+              INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+              INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+              WHERE ic.object_id = i.object_id
+                AND ic.index_id = i.index_id
+          );
+
+        -- 2. Default and check constraints bound to an obsolete image column.
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'ALTER TABLE dbo.ToastMessage DROP CONSTRAINT ' + QUOTENAME(dc.name) + N';' + NCHAR(10)
+        FROM sys.default_constraints dc
+        INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE dc.parent_object_id = OBJECT_ID('dbo.ToastMessage');
+
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'ALTER TABLE dbo.ToastMessage DROP CONSTRAINT ' + QUOTENAME(cc.name) + N';' + NCHAR(10)
+        FROM sys.check_constraints cc
+        INNER JOIN sys.columns c ON c.object_id = cc.parent_object_id AND c.column_id = cc.parent_column_id
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE cc.parent_object_id = OBJECT_ID('dbo.ToastMessage');
+
+        -- 3. User-created statistics on an obsolete image column.
+        SELECT @DropObsoleteImageDependenciesSql = @DropObsoleteImageDependenciesSql
+            + N'DROP STATISTICS dbo.ToastMessage.' + QUOTENAME(s.name) + N';' + NCHAR(10)
+        FROM sys.stats s
+        WHERE s.object_id = OBJECT_ID('dbo.ToastMessage')
+          AND s.user_created = 1
+          AND EXISTS (
+              SELECT 1
+              FROM sys.stats_columns sc
+              INNER JOIN sys.columns c ON c.object_id = sc.object_id AND c.column_id = sc.column_id
+              INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+              WHERE sc.object_id = s.object_id
+                AND sc.stats_id = s.stats_id
+          );
+
+        IF LEN(@DropObsoleteImageDependenciesSql) > 0
+            EXEC sp_executesql @DropObsoleteImageDependenciesSql;
+
+        -- 4. Drop the obsolete image columns themselves.
+        DECLARE @DropObsoleteImageColumnsSql nvarchar(max) = N'';
+        SELECT @DropObsoleteImageColumnsSql = @DropObsoleteImageColumnsSql
+            + N'ALTER TABLE dbo.ToastMessage DROP COLUMN ' + QUOTENAME(c.name) + N';' + NCHAR(10)
+        FROM sys.columns c
+        INNER JOIN @ObsoleteToastImageColumns o ON o.ColumnName = c.name
+        WHERE c.object_id = OBJECT_ID('dbo.ToastMessage');
+
+        IF LEN(@DropObsoleteImageColumnsSql) > 0
+            EXEC sp_executesql @DropObsoleteImageColumnsSql;
+    END;
+
+    -- Recreate the polling index without image columns when it was dropped above (or is missing).
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.ToastMessage') AND name = 'IX_ToastMessage_Polling')
+        CREATE INDEX IX_ToastMessage_Polling
+            ON dbo.ToastMessage(MessageId)
+            INCLUDE (
+                IsCancelled, ExpiresUtc, Title, Body,
+                Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount,
+                ButtonText, ButtonArguments, ButtonActivationType, Scenario, DisplayMode
+            );
+
+    COMMIT;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK;
+
+    THROW;
+END CATCH;
+
+GO
 CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
     @GroupName nvarchar(128),
     @Title nvarchar(200),
     @Body nvarchar(4000),
     @ExpiresUtc datetime2(0) = NULL,
-    @AppLogoPath nvarchar(1024) = NULL,
-    @HeroImagePath nvarchar(1024) = NULL,
-    @AppLogoBytes varbinary(max) = NULL,
-    @AppLogoContentType varchar(100) = NULL,
-    @HeroImageBytes varbinary(max) = NULL,
-    @HeroImageContentType varchar(100) = NULL,
     @Sound varchar(20) = NULL,
     @IsUrgent bit = 0,
     @RepeatIntervalSeconds int = NULL,
@@ -548,8 +616,6 @@ BEGIN
     SET @ButtonText = NULLIF(LTRIM(RTRIM(@ButtonText)), '');
     SET @ButtonArguments = NULLIF(LTRIM(RTRIM(@ButtonArguments)), '');
     SET @ButtonActivationType = NULLIF(LTRIM(RTRIM(@ButtonActivationType)), '');
-    SET @AppLogoContentType = LOWER(NULLIF(LTRIM(RTRIM(@AppLogoContentType)), ''));
-    SET @HeroImageContentType = LOWER(NULLIF(LTRIM(RTRIM(@HeroImageContentType)), ''));
     SET @Scenario = NULLIF(LTRIM(RTRIM(@Scenario)), '');
     SET @DisplayMode = NULLIF(LTRIM(RTRIM(@DisplayMode)), '');
     SET @Subtitle = NULLIF(LTRIM(RTRIM(@Subtitle)), '');
@@ -601,36 +667,6 @@ BEGIN
     )
         THROW 50012, 'ButtonArguments must look like a valid absolute URI when ButtonActivationType is Protocol.', 1;
 
-    IF (@AppLogoBytes IS NULL AND @AppLogoContentType IS NOT NULL) OR (@AppLogoBytes IS NOT NULL AND @AppLogoContentType IS NULL)
-        THROW 50014, 'AppLogoBytes and AppLogoContentType must both be provided for binary app-logo images.', 1;
-
-    IF (@HeroImageBytes IS NULL AND @HeroImageContentType IS NOT NULL) OR (@HeroImageBytes IS NOT NULL AND @HeroImageContentType IS NULL)
-        THROW 50015, 'HeroImageBytes and HeroImageContentType must both be provided for binary hero images.', 1;
-
-    IF @AppLogoContentType = 'image/jpg'
-        SET @AppLogoContentType = 'image/jpeg';
-
-    IF @HeroImageContentType = 'image/jpg'
-        SET @HeroImageContentType = 'image/jpeg';
-
-    IF @AppLogoContentType IS NOT NULL AND @AppLogoContentType NOT IN ('image/png','image/jpeg','image/gif','image/bmp')
-        THROW 50016, 'AppLogoContentType must be image/png, image/jpeg, image/gif, or image/bmp.', 1;
-
-    IF @HeroImageContentType IS NOT NULL AND @HeroImageContentType NOT IN ('image/png','image/jpeg','image/gif','image/bmp')
-        THROW 50017, 'HeroImageContentType must be image/png, image/jpeg, image/gif, or image/bmp.', 1;
-
-    IF @AppLogoBytes IS NOT NULL AND DATALENGTH(@AppLogoBytes) > 5242880
-        THROW 50018, 'AppLogoBytes exceeds the maximum supported image size of 5242880 bytes.', 1;
-
-    IF @AppLogoBytes IS NOT NULL AND DATALENGTH(@AppLogoBytes) = 0
-        THROW 50020, 'AppLogoBytes must not be empty.', 1;
-
-    IF @HeroImageBytes IS NOT NULL AND DATALENGTH(@HeroImageBytes) > 5242880
-        THROW 50019, 'HeroImageBytes exceeds the maximum supported image size of 5242880 bytes.', 1;
-
-    IF @HeroImageBytes IS NOT NULL AND DATALENGTH(@HeroImageBytes) = 0
-        THROW 50021, 'HeroImageBytes must not be empty.', 1;
-
     DECLARE @GroupId int = (SELECT GroupId FROM dbo.ToastGroup WHERE GroupName = @GroupName AND IsActive = 1);
     IF @GroupId IS NULL THROW 50001, 'Active toast group was not found.', 1;
 
@@ -642,12 +678,6 @@ BEGIN
         Subtitle,
         Body,
         ExpiresUtc,
-        AppLogoPath,
-        HeroImagePath,
-        AppLogoBytes,
-        AppLogoContentType,
-        HeroImageBytes,
-        HeroImageContentType,
         Sound,
         IsUrgent,
         RepeatIntervalSeconds,
@@ -665,12 +695,6 @@ BEGIN
         @Subtitle,
         @Body,
         @ExpiresUtc,
-        NULLIF(@AppLogoPath, ''),
-        NULLIF(@HeroImagePath, ''),
-        @AppLogoBytes,
-        @AppLogoContentType,
-        @HeroImageBytes,
-        @HeroImageContentType,
         NULLIF(@Sound, ''),
         ISNULL(@IsUrgent, 0),
         @RepeatIntervalSeconds,
@@ -737,12 +761,6 @@ BEGIN
            m.Title,
            m.Subtitle,
            m.Body,
-           m.AppLogoPath,
-           m.HeroImagePath,
-           m.AppLogoBytes,
-           m.AppLogoContentType,
-           m.HeroImageBytes,
-           m.HeroImageContentType,
            m.Sound,
            m.IsUrgent,
            m.ButtonText,

@@ -11,12 +11,6 @@ $script:ToastSqlNullParameterDefinitions = @{
     Title = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
     Subtitle = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
     Body = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 4000 }
-    AppLogoPath = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 1024 }
-    HeroImagePath = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 1024 }
-    AppLogoBytes = @{ SqlDbType = [System.Data.SqlDbType]::VarBinary; Size = -1 }
-    HeroImageBytes = @{ SqlDbType = [System.Data.SqlDbType]::VarBinary; Size = -1 }
-    AppLogoContentType = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 100 }
-    HeroImageContentType = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 100 }
     Sound = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 20 }
     IsUrgent = @{ SqlDbType = [System.Data.SqlDbType]::Bit }
     RepeatIntervalSeconds = @{ SqlDbType = [System.Data.SqlDbType]::Int }
@@ -159,6 +153,56 @@ function Resolve-ToastRepeatSettings {
     }
 }
 
+function ConvertTo-ToastProtocolUrl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ButtonArguments
+    )
+
+    $examples = "Use a raw URL such as 'https://example.com' or JSON such as '{""url"":""https://example.com""}'."
+    $candidate = $ButtonArguments.Trim()
+    $source = 'ButtonArguments'
+
+    if ($candidate.StartsWith('{')) {
+        try {
+            $json = $candidate | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            throw "ButtonArguments contains malformed JSON: $($_.Exception.Message) $examples"
+        }
+
+        $urlProperty = if ($null -ne $json -and $json -is [System.Management.Automation.PSCustomObject]) { $json.PSObject.Properties['url'] } else { $null }
+        if ($null -eq $urlProperty -or $urlProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($urlProperty.Value)) {
+            throw "ButtonArguments JSON must contain a non-empty string 'url' property. $examples"
+        }
+
+        $candidate = $urlProperty.Value.Trim()
+        $source = "ButtonArguments JSON 'url' value"
+    }
+
+    $uri = $null
+    $isValid = (
+        [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$uri) -and
+        $candidate -match '^[a-zA-Z][a-zA-Z0-9+.-]*:' -and
+        $script:ToastSupportedProtocolSchemes -contains $uri.Scheme.ToLowerInvariant()
+    )
+    if ($isValid -and $uri.Scheme -in @('http','https')) {
+        $isValid = ($candidate -match '^(?i)https?://[^/?#\s]') -and -not [string]::IsNullOrWhiteSpace($uri.Host)
+    }
+    if ($isValid -and $uri.Scheme -eq 'mailto') {
+        $isValid = $candidate -match '^(?i)mailto:\S'
+    }
+
+    if (-not $isValid) {
+        throw "$source must be a valid absolute URI using http, https, or mailto when ButtonActivationType is Protocol. $examples"
+    }
+
+    if ($candidate.Length -gt 2048) {
+        throw "$source must be 2048 characters or fewer."
+    }
+
+    return $candidate
+}
+
 function Resolve-ToastButtonSettings {
     [CmdletBinding()]
     param(
@@ -192,14 +236,8 @@ function Resolve-ToastButtonSettings {
             throw 'ButtonArguments is required when ButtonActivationType is Protocol.'
         }
 
-        $buttonUri = $null
-        if (
-            -not [System.Uri]::TryCreate($normalizedButtonArguments, [System.UriKind]::Absolute, [ref]$buttonUri) -or
-            [string]::IsNullOrWhiteSpace($buttonUri.Scheme) -or
-            ($normalizedButtonArguments -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*:')
-        ) {
-            throw 'ButtonArguments must be a valid absolute URI when ButtonActivationType is Protocol.'
-        }
+        # Accept a raw URL or JSON such as {"url":"https://..."} and store only the raw URL.
+        $normalizedButtonArguments = ConvertTo-ToastProtocolUrl -ButtonArguments $normalizedButtonArguments
     } elseif ($null -eq $normalizedButtonArguments) {
         # Dismiss buttons can omit arguments.
     }
@@ -448,25 +486,13 @@ function Resolve-ToastProtocolUri {
         return $null
     }
 
-    $normalizedButtonArguments = [string]$ButtonArguments
-    if (-not [string]::IsNullOrWhiteSpace($normalizedButtonArguments)) {
-        $normalizedButtonArguments = $normalizedButtonArguments.Trim()
-    }
-
-    $protocolUri = $null
-    if (
-        -not [System.Uri]::TryCreate($normalizedButtonArguments, [System.UriKind]::Absolute, [ref]$protocolUri) -or
-        [string]::IsNullOrWhiteSpace($protocolUri.Scheme) -or
-        ($normalizedButtonArguments -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*:')
-    ) {
+    try {
+        $protocolUrl = ConvertTo-ToastProtocolUrl -ButtonArguments $ButtonArguments
+    } catch {
         return $null
     }
 
-    if ($script:ToastSupportedProtocolSchemes -notcontains $protocolUri.Scheme.ToLowerInvariant()) {
-        return $null
-    }
-
-    return $protocolUri
+    return [System.Uri]::new($protocolUrl, [System.UriKind]::Absolute)
 }
 
 function Resolve-ToastAppDeployToolkitButtonSettings {
@@ -700,35 +726,68 @@ function Show-ToastAppDeployToolkitPrompt {
     }
 }
 
+function Test-ToastInteractiveUserSession {
+    [CmdletBinding()]
+    param()
+
+    # True when this process already runs as the interactive logged-on user (not SYSTEM, not session 0).
+    try {
+        if ([System.Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
+            return $false
+        }
+
+        if ([System.Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) {
+            return $false
+        }
+
+        return [System.Environment]::UserInteractive
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-ToastProtocolAction {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ButtonArguments
     )
 
+    $launchTarget = $null
     try {
-        $protocolUri = Resolve-ToastProtocolUri -ButtonArguments $ButtonArguments
-        if ($null -eq $protocolUri) {
-            throw 'Protocol actions support only absolute http, https, or mailto URIs.'
+        # ConvertTo-ToastProtocolUrl throws a descriptive error (malformed JSON, missing url, unsupported scheme).
+        $protocolUrl = ConvertTo-ToastProtocolUrl -ButtonArguments $ButtonArguments
+        $launchTarget = ([System.Uri]::new($protocolUrl, [System.UriKind]::Absolute)).AbsoluteUri
+
+        if (Test-ToastInteractiveUserSession) {
+            # Already in the user's session: let the shell open the URL with the default browser/handler.
+            Write-Verbose "Opening '$launchTarget' with Start-Process in the current interactive user session."
+            Start-Process -FilePath $launchTarget -ErrorAction Stop | Out-Null
+            return $null
         }
 
         $startAsUserCommand = Get-Command -Name 'Start-ADTProcessAsUser' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -eq $startAsUserCommand) {
-            Write-Warning "AppDeployToolkit command 'Start-ADTProcessAsUser' is not available; opening '$($protocolUri.AbsoluteUri)' with Start-Process in the current session instead."
-            Start-Process -FilePath $protocolUri.AbsoluteUri -ErrorAction Stop | Out-Null
-            return $null
+            throw "The client is running as SYSTEM or outside the interactive user session, and PSAppDeployToolkit command 'Start-ADTProcessAsUser' is not available to open '$launchTarget' for the logged-on user."
         }
 
-        # explorer.exe hands the URI to the user's default browser/protocol handler.
+        # explorer.exe hands the URI to the logged-on user's default browser/protocol handler.
+        # The bundled PSAppDeployToolkit 4.1.8 Start-ADTProcessAsUser supports -FilePath, -ArgumentList and -NoWait (no -UseShellExecute).
         $shellPath = [System.IO.Path]::Combine([System.Environment]::GetFolderPath('Windows'), 'explorer.exe')
+        Write-Verbose "Opening '$launchTarget' for the logged-on user via Start-ADTProcessAsUser '$shellPath'."
         & $startAsUserCommand `
             -FilePath $shellPath `
-            -ArgumentList @($protocolUri.AbsoluteUri) `
+            -ArgumentList @($launchTarget) `
             -NoWait `
             -ErrorAction Stop | Out-Null
         return $null
     } catch {
-        return $_.Exception.Message
+        $launchError = $_.Exception.Message
+        $loggedArguments = if ($null -ne $launchTarget) { $launchTarget } else { [string]$ButtonArguments }
+        if ($loggedArguments.Length -gt 200) {
+            $loggedArguments = $loggedArguments.Substring(0, 200) + '...'
+        }
+        Write-Warning "Failed to open protocol action '$loggedArguments': $launchError"
+        return $launchError
     }
 }
 

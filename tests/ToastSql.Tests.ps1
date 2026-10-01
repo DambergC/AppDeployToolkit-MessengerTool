@@ -130,6 +130,49 @@ Describe 'ToastSql module' {
                 Should -Throw '*ButtonArguments must be a valid absolute URI*'
         }
 
+        It 'accepts a raw absolute http, https, or mailto URL for protocol buttons' {
+            foreach ($url in @('https://github.com/DambergC/BurntToast-SQLserver/tree/main', 'http://intranet.contoso.example/status', 'mailto:support@contoso.example')) {
+                $result = Resolve-ToastButtonSettings -ButtonText 'Open' -ButtonArguments "  $url  " -ButtonActivationType 'Protocol'
+                $result.ButtonArguments | Should -Be $url
+                $result.ButtonActivationType | Should -Be 'Protocol'
+            }
+        }
+
+        It 'normalizes JSON {"url":"..."} protocol button arguments to the raw URL before the SQL call' {
+            $result = Resolve-ToastButtonSettings -ButtonText 'Open GitHub' -ButtonArguments '{"url":"https://github.com/DambergC/BurntToast-SQLserver/tree/main"}' -ButtonActivationType 'Protocol'
+            $result.ButtonArguments | Should -Be 'https://github.com/DambergC/BurntToast-SQLserver/tree/main'
+
+            $defaulted = Resolve-ToastButtonSettings -ButtonText 'Open GitHub' -ButtonArguments ' { "url" : " https://github.com/DambergC " } '
+            $defaulted.ButtonArguments | Should -Be 'https://github.com/DambergC'
+            $defaulted.ButtonActivationType | Should -Be 'Protocol'
+        }
+
+        It 'rejects malformed JSON protocol button arguments with a clear error' {
+            { Resolve-ToastButtonSettings -ButtonText 'Open' -ButtonArguments '{"url":"https://github.com"' -ButtonActivationType 'Protocol' } |
+                Should -Throw '*malformed JSON*'
+        }
+
+        It 'rejects JSON protocol button arguments without a usable url property' {
+            foreach ($json in @('{}', '{"link":"https://github.com"}', '{"url":""}', '{"url":42}', '{"url":null}')) {
+                { Resolve-ToastButtonSettings -ButtonText 'Open' -ButtonArguments $json -ButtonActivationType 'Protocol' } |
+                    Should -Throw "*non-empty string 'url' property*"
+            }
+        }
+
+        It 'rejects JSON protocol button arguments whose url is not an absolute http, https, or mailto URI' {
+            foreach ($json in @('{"url":"www.github.com"}', '{"url":"/relative"}', '{"url":"file:///C:/Windows/notepad.exe"}', '{"url":"https:github.com"}')) {
+                { Resolve-ToastButtonSettings -ButtonText 'Open' -ButtonArguments $json -ButtonActivationType 'Protocol' } |
+                    Should -Throw "*JSON 'url' value must be a valid absolute URI using http, https, or mailto*"
+            }
+        }
+
+        It 'rejects raw protocol button arguments with unsupported schemes at send time' {
+            foreach ($url in @('file:///C:/Windows/notepad.exe', 'ftp://files.example.com/file', 'https:///nohost')) {
+                { Resolve-ToastButtonSettings -ButtonText 'Open' -ButtonArguments $url -ButtonActivationType 'Protocol' } |
+                    Should -Throw '*ButtonArguments must be a valid absolute URI using http, https, or mailto*'
+            }
+        }
+
         It 'accepts a valid Dismiss button without arguments' {
             $result = Resolve-ToastButtonSettings -ButtonText 'Dismiss' -ButtonActivationType 'Dismiss'
 
@@ -250,7 +293,7 @@ Describe 'ToastSql module' {
 
         It 'rejects AppDeployToolkit protocol buttons with invalid or host-less URIs' {
             InModuleScope ToastSql {
-                foreach ($invalidUri in @('www.github.com', 'not a uri', '{"url":"https://github.com"}')) {
+                foreach ($invalidUri in @('www.github.com', 'not a uri', '{"url":"not a uri"}')) {
                     {
                         Resolve-ToastAppDeployToolkitButtonSettings `
                             -ButtonText 'Öppna GitHub' `
@@ -259,6 +302,34 @@ Describe 'ToastSql module' {
                     } | Should -Throw '*absolute URI*'
                 }
             }
+        }
+
+        It 'accepts JSON url protocol buttons on the client and resolves them to the raw URL' {
+            InModuleScope ToastSql {
+                $result = Resolve-ToastAppDeployToolkitButtonSettings `
+                    -ButtonText 'Öppna GitHub' `
+                    -ButtonArguments '{"url":"https://github.com/DambergC/BurntToast-SQLserver/tree/main"}' `
+                    -ButtonActivationType 'Protocol'
+
+                $result.ButtonArguments | Should -Be 'https://github.com/DambergC/BurntToast-SQLserver/tree/main'
+                $result.ProtocolUri.AbsoluteUri | Should -Be 'https://github.com/DambergC/BurntToast-SQLserver/tree/main'
+            }
+        }
+
+        It 'maps the bundled PSAppDeployToolkit Show-ADTInstallationPrompt return values (clicked button text or Timeout)' {
+            InModuleScope ToastSql {
+                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Öppna GitHub' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Action'
+                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Stäng' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Acknowledge'
+                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Timeout' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Acknowledge'
+                Resolve-ToastAppDeployToolkitPromptSelection -Result $null -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Acknowledge'
+            }
+
+            # Bundled version documents that the clicked button's text is returned.
+            $bundledToolkitModule = Get-ChildItem -Path (Join-Path $PSScriptRoot '..\Dependencies\PSAppDeployToolkit') -Filter 'PSAppDeployToolkit.psm1' -Recurse | Select-Object -First 1
+            $bundledToolkitText = Get-Content -Path $bundledToolkitModule.FullName -Raw
+            $bundledToolkitText | Should -Match 'The return value of the button clicked by the user is the button text specified'
+            $bundledToolkitText | Should -Match "\[System\.String\]\`$ButtonLeftText"
+            $bundledToolkitText | Should -Match "\[System\.String\]\`$ButtonRightText"
         }
 
         It 'maps custom acknowledgement button text results to acknowledgement' {
@@ -285,6 +356,7 @@ Describe 'ToastSql module' {
         It 'launches protocol actions in the user context via Start-ADTProcessAsUser and the default handler' {
             InModuleScope ToastSql {
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
                 Mock Start-Process {}
 
@@ -324,6 +396,7 @@ Describe 'ToastSql module' {
         It 'launches mailto protocol actions via Start-ADTProcessAsUser' {
             InModuleScope ToastSql {
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -340,6 +413,7 @@ Describe 'ToastSql module' {
         It 'returns an error message when Start-ADTProcessAsUser fails to start the protocol action' {
             InModuleScope ToastSql {
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser { throw 'boom' }
 
                 try {
@@ -353,13 +427,16 @@ Describe 'ToastSql module' {
         It 'rejects invalid, relative, or unsupported URIs in the protocol launcher without starting a process' {
             InModuleScope ToastSql {
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
                 Mock Start-Process {}
 
                 try {
-                    foreach ($invalidUri in @('/intranet/status', 'www.contoso.com', 'ftp://files.example.com/file', '{"url":"https://github.com/DambergC/BurntToast-SQLserver"}')) {
+                    foreach ($invalidUri in @('/intranet/status', 'www.contoso.com', 'ftp://files.example.com/file', '{"url":"ftp://files.example.com/file"}')) {
                         (Invoke-ToastProtocolAction -ButtonArguments $invalidUri) | Should -Match 'http, https, or mailto'
                     }
+                    (Invoke-ToastProtocolAction -ButtonArguments '{"url":') | Should -Match 'malformed JSON'
+                    (Invoke-ToastProtocolAction -ButtonArguments '{"link":"https://example.com"}') | Should -Match "non-empty string 'url'"
                     Should -Invoke Start-ADTProcessAsUser -Times 0
                     Should -Invoke Start-Process -Times 0
                 } finally {
@@ -368,14 +445,68 @@ Describe 'ToastSql module' {
             }
         }
 
-        It 'falls back to Start-Process with a warning when Start-ADTProcessAsUser is unavailable' {
+        It 'opens the URL with Start-Process when already running in the interactive user session' {
             InModuleScope ToastSql {
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $true }
+                Mock Start-ADTProcessAsUser {}
+                Mock Start-Process {}
+
+                try {
+                    Invoke-ToastProtocolAction -ButtonArguments 'https://github.com/DambergC/BurntToast-SQLserver/tree/main' | Should -Be $null
+                    Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+                        $FilePath -eq 'https://github.com/DambergC/BurntToast-SQLserver/tree/main'
+                    }
+                    Should -Invoke Start-ADTProcessAsUser -Times 0
+                } finally {
+                    Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'launches a JSON url protocol action with the raw URL via Start-ADTProcessAsUser when running as SYSTEM' {
+            InModuleScope ToastSql {
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
+                Mock Start-ADTProcessAsUser {}
+                Mock Start-Process {}
+
+                try {
+                    Invoke-ToastProtocolAction -ButtonArguments '{"url":"https://github.com/DambergC/BurntToast-SQLserver/tree/main"}' | Should -Be $null
+                    Should -Invoke Start-ADTProcessAsUser -Times 1 -Exactly -ParameterFilter {
+                        $FilePath -like '*explorer.exe' -and
+                        $ArgumentList.Count -eq 1 -and
+                        $ArgumentList[0] -eq 'https://github.com/DambergC/BurntToast-SQLserver/tree/main' -and
+                        $NoWait
+                    }
+                    Should -Invoke Start-Process -Times 0
+                } finally {
+                    Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'returns and logs an error instead of silently succeeding when running outside the user session without Start-ADTProcessAsUser' {
+            InModuleScope ToastSql {
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Start-ADTProcessAsUser' }
                 Mock Start-Process {}
 
-                Invoke-ToastProtocolAction -ButtonArguments 'https://example.com' -WarningVariable launchWarnings -WarningAction SilentlyContinue | Should -Be $null
-                Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'https://example.com/' }
-                ($launchWarnings -join ' ') | Should -Match 'Start-ADTProcessAsUser'
+                $launchError = Invoke-ToastProtocolAction -ButtonArguments 'https://example.com' -WarningVariable launchWarnings -WarningAction SilentlyContinue
+                $launchError | Should -Match 'Start-ADTProcessAsUser'
+                Should -Invoke Start-Process -Times 0
+                ($launchWarnings -join ' ') | Should -Match 'Failed to open protocol action'
+            }
+        }
+
+        It 'returns and logs Start-Process failures in the interactive user session' {
+            InModuleScope ToastSql {
+                Mock Test-ToastInteractiveUserSession { $true }
+                Mock Start-Process { throw 'no handler' }
+
+                $launchError = Invoke-ToastProtocolAction -ButtonArguments 'https://example.com' -WarningVariable launchWarnings -WarningAction SilentlyContinue
+                $launchError | Should -Match 'no handler'
+                ($launchWarnings -join ' ') | Should -Match 'no handler'
             }
         }
     }
@@ -594,6 +725,7 @@ Describe 'ToastSql module' {
                 }
 
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -630,6 +762,7 @@ Describe 'ToastSql module' {
                 }
 
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -666,6 +799,7 @@ Describe 'ToastSql module' {
                 }
 
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -702,6 +836,7 @@ Describe 'ToastSql module' {
                 }
 
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -740,6 +875,7 @@ Describe 'ToastSql module' {
                 }
 
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -804,6 +940,7 @@ Describe 'ToastSql module' {
                 }
 
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -839,6 +976,7 @@ Describe 'ToastSql module' {
                 }
 
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Test-ToastInteractiveUserSession { $false }
                 Mock Start-ADTProcessAsUser {}
 
                 try {
@@ -1215,22 +1353,12 @@ function Show-InstallationPrompt {
             $repeatScriptText | Should -Match "@LeaseId uniqueidentifier"
             $repeatScriptText | Should -Match "inserted\.LeaseId"
             $repeatScriptText | Should -Match "inserted\.ShowCount"
-            $repeatScriptText | Should -Match "@AppLogoBytes varbinary\(max\) = NULL"
-            $repeatScriptText | Should -Match "@AppLogoContentType varchar\(100\) = NULL"
-            $repeatScriptText | Should -Match "@HeroImageBytes varbinary\(max\) = NULL"
-            $repeatScriptText | Should -Match "@HeroImageContentType varchar\(100\) = NULL"
             $repeatScriptText | Should -Match "IF COL_LENGTH\('dbo\.ToastMessage', 'Subtitle'\) IS NULL\s+ALTER TABLE dbo\.ToastMessage ADD Subtitle nvarchar\(200\) NULL"
             $repeatScriptText | Should -Match "@Subtitle nvarchar\(200\) = NULL"
             $repeatScriptText | Should -Match "m\.Subtitle"
             $repeatScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL") |
                 Should -BeLessThan $repeatScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
 
-            $buttonScriptText | Should -Match "@AppLogoPath nvarchar\(1024\) = NULL"
-            $buttonScriptText | Should -Match "@HeroImagePath nvarchar\(1024\) = NULL"
-            $buttonScriptText | Should -Match "@AppLogoBytes varbinary\(max\) = NULL"
-            $buttonScriptText | Should -Match "@AppLogoContentType varchar\(100\) = NULL"
-            $buttonScriptText | Should -Match "@HeroImageBytes varbinary\(max\) = NULL"
-            $buttonScriptText | Should -Match "@HeroImageContentType varchar\(100\) = NULL"
             $buttonScriptText | Should -Match "@Sound varchar\(20\) = NULL"
             $buttonScriptText | Should -Match "@IsUrgent bit = 0"
             $buttonScriptText | Should -Match "@RepeatIntervalSeconds int = NULL"
@@ -1254,8 +1382,6 @@ function Show-InstallationPrompt {
             $buttonScriptText | Should -Match "h\.MessageId IS NULL"
             $buttonScriptText | Should -Match "m\.Scenario"
             $buttonScriptText | Should -Match "CAST\('AppDeployToolkit' AS varchar\(20\)\) AS DisplayMode"
-            $buttonScriptText | Should -Match "m\.AppLogoBytes"
-            $buttonScriptText | Should -Match "m\.HeroImageBytes"
             $buttonScriptText | Should -Match "IF COL_LENGTH\('dbo\.ToastMessage', 'AcknowledgeButtonText'\) IS NULL\s+ALTER TABLE dbo\.ToastMessage ADD AcknowledgeButtonText nvarchar\(200\) NULL"
             $buttonScriptText | Should -Match "@Subtitle nvarchar\(200\) = NULL,\s*@AcknowledgeButtonText nvarchar\(200\) = NULL\s*AS"
             $buttonScriptText | Should -Match "SET @AcknowledgeButtonText = NULLIF\(LTRIM\(RTRIM\(@AcknowledgeButtonText\)\), ''\)"
@@ -1322,6 +1448,51 @@ function Show-InstallationPrompt {
             $installScriptText | Should -Match "MessagesWithDeliveryHistory AS"
             $installScriptText | Should -Match "h\.MessageId IS NULL"
             $installScriptText | Should -Match "CURRENT_TIMEZONE\(\)"
+        }
+
+        It 'removes obsolete image columns from every SQL script, index, procedure parameter, INSERT, and OUTPUT' {
+            $obsoleteImageColumns = @('AppLogoPath', 'HeroImagePath', 'AppLogoBytes', 'AppLogoContentType', 'HeroImageBytes', 'HeroImageContentType')
+            foreach ($scriptName in @('001-schema.sql', '002-toast-design-repeat.sql', '003-toast-button.sql', '004-local-time-reporting.sql')) {
+                $scriptText = Get-Content -Path (Join-Path $PSScriptRoot "..\sql\$scriptName") -Raw
+                foreach ($columnName in $obsoleteImageColumns) {
+                    $scriptText | Should -Not -Match $columnName -Because "$scriptName must not reference $columnName"
+                }
+            }
+
+            $schemaScriptText = Get-Content -Path (Join-Path $PSScriptRoot '..\sql\001-schema.sql') -Raw
+            $schemaScriptText | Should -Match 'INCLUDE \(IsCancelled, ExpiresUtc, Title, Body, Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount\)'
+            $schemaScriptText | Should -Match 'Sound\s+varchar\(20\) NULL'
+            $schemaScriptText | Should -Match 'm\.Sound'
+
+            $installScriptText = Get-Content -Path (Join-Path $PSScriptRoot '..\sql\Install-BurntToast-SQLserver.sql') -Raw
+            foreach ($columnName in $obsoleteImageColumns) {
+                $installScriptText | Should -Not -Match "ADD $columnName" -Because 'earlier installer stages must not re-add obsolete image columns'
+                $installScriptText | Should -Not -Match "@$columnName" -Because 'procedures must not expose obsolete image parameters'
+                $installScriptText | Should -Not -Match "m\.$columnName" -Because 'usp_GetPendingToast must not OUTPUT obsolete image columns'
+                $installScriptText | Should -Not -Match "(?m)^\s+$columnName\s+(n?varchar|varbinary)" -Because 'fresh installs must not create obsolete image columns'
+            }
+
+            # Existing databases: drop dependent indexes/constraints/statistics first, then the columns, then recreate the polling index and procedures.
+            $cleanupStart = $installScriptText.IndexOf('Remove obsolete image columns from dbo.ToastMessage')
+            $cleanupStart | Should -BeGreaterThan 0
+            $dropIndexPosition = $installScriptText.IndexOf("N'DROP INDEX '", $cleanupStart)
+            $dropColumnPosition = $installScriptText.IndexOf("N'ALTER TABLE dbo.ToastMessage DROP COLUMN '", $cleanupStart)
+            $recreateIndexPosition = $installScriptText.IndexOf('CREATE INDEX IX_ToastMessage_Polling', $cleanupStart)
+            $queueProcedurePosition = $installScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
+            $dropIndexPosition | Should -BeGreaterThan $cleanupStart
+            $dropColumnPosition | Should -BeGreaterThan $dropIndexPosition
+            $recreateIndexPosition | Should -BeGreaterThan $dropColumnPosition
+            $queueProcedurePosition | Should -BeGreaterThan $recreateIndexPosition
+            $installScriptText | Should -Match "VALUES \(N'AppLogoPath'\), \(N'HeroImagePath'\), \(N'AppLogoBytes'\), \(N'AppLogoContentType'\), \(N'HeroImageBytes'\), \(N'HeroImageContentType'\)"
+            $installScriptText | Should -Match 'Back up the database'
+
+            InModuleScope ToastSql -Parameters @{ Columns = $obsoleteImageColumns } {
+                param($Columns)
+                foreach ($columnName in $Columns) {
+                    $script:ToastSqlNullParameterDefinitions.ContainsKey($columnName) | Should -BeFalse
+                }
+                $script:ToastSqlNullParameterDefinitions.ContainsKey('Sound') | Should -BeTrue
+            }
         }
     }
 }

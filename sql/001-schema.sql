@@ -44,12 +44,6 @@ CREATE TABLE dbo.ToastMessage (
     CreatedUtc              datetime2(0) NOT NULL CONSTRAINT DF_ToastMessage_CreatedUtc DEFAULT (SYSDATETIME()),
     ExpiresUtc              datetime2(0) NULL,
     IsCancelled             bit NOT NULL CONSTRAINT DF_ToastMessage_IsCancelled DEFAULT (0),
-    AppLogoPath             nvarchar(1024) NULL,
-    HeroImagePath           nvarchar(1024) NULL,
-    AppLogoBytes            varbinary(max) NULL,
-    AppLogoContentType      varchar(100) NULL,
-    HeroImageBytes          varbinary(max) NULL,
-    HeroImageContentType    varchar(100) NULL,
     Sound                   varchar(20) NULL,
     IsUrgent                bit NOT NULL CONSTRAINT DF_ToastMessage_IsUrgent DEFAULT (0),
     RepeatIntervalSeconds   int NULL,
@@ -90,7 +84,7 @@ CREATE INDEX IX_ToastDelivery_Client_Status
 
 CREATE INDEX IX_ToastMessage_Polling
     ON dbo.ToastMessage(MessageId)
-    INCLUDE (IsCancelled, ExpiresUtc, Title, Body, AppLogoPath, HeroImagePath, Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount);
+    INCLUDE (IsCancelled, ExpiresUtc, Title, Body, Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount);
 GO
 
 -------------------------------------------------------------
@@ -102,12 +96,6 @@ CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
     @Title nvarchar(200),
     @Body nvarchar(4000),
     @ExpiresUtc datetime2(0) = NULL,
-    @AppLogoPath nvarchar(1024) = NULL,
-    @HeroImagePath nvarchar(1024) = NULL,
-    @AppLogoBytes varbinary(max) = NULL,
-    @AppLogoContentType varchar(100) = NULL,
-    @HeroImageBytes varbinary(max) = NULL,
-    @HeroImageContentType varchar(100) = NULL,
     @Sound varchar(20) = NULL,
     @IsUrgent bit = 0,
     @RepeatIntervalSeconds int = NULL,
@@ -137,8 +125,6 @@ BEGIN
     SET @ButtonText = NULLIF(LTRIM(RTRIM(@ButtonText)), '');
     SET @ButtonArguments = NULLIF(LTRIM(RTRIM(@ButtonArguments)), '');
     SET @ButtonActivationType = NULLIF(LTRIM(RTRIM(@ButtonActivationType)), '');
-    SET @AppLogoContentType = LOWER(NULLIF(LTRIM(RTRIM(@AppLogoContentType)), ''));
-    SET @HeroImageContentType = LOWER(NULLIF(LTRIM(RTRIM(@HeroImageContentType)), ''));
     SET @Scenario = NULLIF(LTRIM(RTRIM(@Scenario)), '');
     SET @DisplayMode = NULLIF(LTRIM(RTRIM(@DisplayMode)), '');
     SET @AcknowledgeButtonText = NULLIF(LTRIM(RTRIM(@AcknowledgeButtonText)), '');
@@ -189,51 +175,19 @@ BEGIN
     )
         THROW 50012, 'ButtonArguments must look like a valid absolute URI when ButtonActivationType is Protocol.', 1;
 
-    IF (@AppLogoBytes IS NULL AND @AppLogoContentType IS NOT NULL) OR (@AppLogoBytes IS NOT NULL AND @AppLogoContentType IS NULL)
-        THROW 50014, 'AppLogoBytes and AppLogoContentType must both be provided for binary app-logo images.', 1;
-
-    IF (@HeroImageBytes IS NULL AND @HeroImageContentType IS NOT NULL) OR (@HeroImageBytes IS NOT NULL AND @HeroImageContentType IS NULL)
-        THROW 50015, 'HeroImageBytes and HeroImageContentType must both be provided for binary hero images.', 1;
-
-    IF @AppLogoContentType = 'image/jpg'
-        SET @AppLogoContentType = 'image/jpeg';
-
-    IF @HeroImageContentType = 'image/jpg'
-        SET @HeroImageContentType = 'image/jpeg';
-
-    IF @AppLogoContentType IS NOT NULL AND @AppLogoContentType NOT IN ('image/png','image/jpeg','image/gif','image/bmp')
-        THROW 50016, 'AppLogoContentType must be image/png, image/jpeg, image/gif, or image/bmp.', 1;
-
-    IF @HeroImageContentType IS NOT NULL AND @HeroImageContentType NOT IN ('image/png','image/jpeg','image/gif','image/bmp')
-        THROW 50017, 'HeroImageContentType must be image/png, image/jpeg, image/gif, or image/bmp.', 1;
-
-    IF @AppLogoBytes IS NOT NULL AND DATALENGTH(@AppLogoBytes) > 5242880
-        THROW 50018, 'AppLogoBytes exceeds the maximum supported image size of 5242880 bytes.', 1;
-
-    IF @AppLogoBytes IS NOT NULL AND DATALENGTH(@AppLogoBytes) = 0
-        THROW 50020, 'AppLogoBytes must not be empty.', 1;
-
-    IF @HeroImageBytes IS NOT NULL AND DATALENGTH(@HeroImageBytes) > 5242880
-        THROW 50019, 'HeroImageBytes exceeds the maximum supported image size of 5242880 bytes.', 1;
-
-    IF @HeroImageBytes IS NOT NULL AND DATALENGTH(@HeroImageBytes) = 0
-        THROW 50021, 'HeroImageBytes must not be empty.', 1;
-
     DECLARE @GroupId int = (SELECT GroupId FROM dbo.ToastGroup WHERE GroupName = @GroupName AND IsActive = 1);
     IF @GroupId IS NULL THROW 50001, 'Active toast group was not found.', 1;
 
     BEGIN TRAN;
 
     INSERT dbo.ToastMessage(
-        GroupId, Title, Subtitle, Body, ExpiresUtc, AppLogoPath, HeroImagePath,
-        AppLogoBytes, AppLogoContentType, HeroImageBytes, HeroImageContentType,
+        GroupId, Title, Subtitle, Body, ExpiresUtc,
         Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount,
         ButtonText, ButtonArguments, ButtonActivationType, Scenario, DisplayMode,
         AcknowledgeButtonText
     )
     VALUES(
-        @GroupId, @Title, NULLIF(LTRIM(RTRIM(@Subtitle)), ''), @Body, @ExpiresUtc, NULLIF(@AppLogoPath, ''), NULLIF(@HeroImagePath, ''),
-        @AppLogoBytes, @AppLogoContentType, @HeroImageBytes, @HeroImageContentType,
+        @GroupId, @Title, NULLIF(LTRIM(RTRIM(@Subtitle)), ''), @Body, @ExpiresUtc,
         NULLIF(@Sound, ''), ISNULL(@IsUrgent, 0), @RepeatIntervalSeconds, @RepeatCount,
         @ButtonText, @ButtonArguments, @ButtonActivationType, @Scenario, @DisplayMode,
         @AcknowledgeButtonText
@@ -293,12 +247,6 @@ BEGIN
            m.Title,
            m.Subtitle,
            m.Body,
-           m.AppLogoPath,
-           m.HeroImagePath,
-           m.AppLogoBytes,
-           m.AppLogoContentType,
-           m.HeroImageBytes,
-           m.HeroImageContentType,
            m.Sound,
            m.IsUrgent,
            m.ButtonText,

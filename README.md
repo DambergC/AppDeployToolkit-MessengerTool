@@ -6,6 +6,8 @@ Projektet behåller SQL-kö, klientregistrering, polling, leasing, repeat-logik 
 
 ## Quick start
 
+> **Varning – ta backup först:** Vid uppgradering av en befintlig databas tar `sql/Install-BurntToast-SQLserver.sql` bort kolumnerna `AppLogoPath`, `HeroImagePath`, `AppLogoBytes`, `AppLogoContentType`, `HeroImageBytes` och `HeroImageContentType` från `dbo.ToastMessage`. All bilddata i dessa kolumner raderas **permanent**. Ta en fullständig backup av databasen (t.ex. `BACKUP DATABASE ... TO DISK = ...`) innan skriptet körs.
+
 1. Kör det konsoliderade SQL-skriptet i databasen:
 
 ```sql
@@ -144,8 +146,9 @@ Krav:
 
 - `ButtonText` måste anges
 - `ButtonActivationType` måste vara `Protocol` eller `Dismiss`
-- `ButtonArguments` måste vara en **absolut** URI när `ButtonActivationType = 'Protocol'`
+- `ButtonArguments` måste vara en **absolut** URI när `ButtonActivationType = 'Protocol'`, antingen som rå URL (`'https://...'`) eller som JSON `'{"url":"https://..."}'`
 - endast dessa URI-scheman tillåts: `http`, `https`, `mailto`
+- JSON-formatet tolkas av `Send-ToastMessage.ps1`, `url` valideras och normaliseras till den råa URL:en **innan** `dbo.usp_QueueToastMessage` anropas, så SQL lagrar alltid den råa URL:en. Felaktig JSON, saknad/tom `url` eller en ogiltig URL ger ett tydligt fel och inget meddelande köas
 
 Exempel med egen text på acknowledge-knappen (`Stäng`) och en vänsterknapp som öppnar en webbadress i standardwebbläsaren:
 
@@ -158,6 +161,20 @@ Exempel med egen text på acknowledge-knappen (`Stäng`) och en vänsterknapp so
   -Body 'Öppna projektet på GitHub.' `
   -ButtonText 'Öppna GitHub' `
   -ButtonArguments 'https://github.com/DambergC/BurntToast-SQLserver' `
+  -ButtonActivationType 'Protocol' `
+  -AcknowledgeButtonText 'Stäng'
+```
+
+Samma knapp med JSON-formatet (`url` extraheras och lagras som `https://github.com/DambergC/BurntToast-SQLserver/tree/main`):
+
+```powershell
+.\src\Server\Send-ToastMessage.ps1 `
+  -ConfigPath .\config\config.psd1 `
+  -GroupName 'IT-TEST' `
+  -Title 'Information' `
+  -Body 'Öppna projektet på GitHub.' `
+  -ButtonText 'Öppna GitHub' `
+  -ButtonArguments '{"url":"https://github.com/DambergC/BurntToast-SQLserver/tree/main"}' `
   -ButtonActivationType 'Protocol' `
   -AcknowledgeButtonText 'Stäng'
 ```
@@ -187,15 +204,18 @@ Fler exempel:
 
 Beteende:
 
-- om användaren klickar action-knappen och det är en `Protocol`-knapp valideras URI:n igen och öppnas i den inloggade användarens kontext via PSAppDeployToolkits `Start-ADTProcessAsUser` (`-FilePath explorer.exe -ArgumentList <url> -NoWait`, kompatibelt med den medföljande 4.1.8-versionen). `explorer.exe` lämnar över URI:n till användarens standardwebbläsare/standardprogram för schemat — Edge hårdkodas inte
-- om den laddade AppDeployToolkit-versionen saknar `Start-ADTProcessAsUser` (t.ex. äldre `Show-InstallationPrompt`-varianter) loggas en varning och URI:n öppnas i stället med `Start-Process` i klientens session
+- `Show-ADTInstallationPrompt` (4.1.8) returnerar texten på den klickade knappen (eller `Timeout`); klick på vänsterknappens text tolkas som action, allt annat som kvittering
+- om användaren klickar action-knappen och det är en `Protocol`-knapp valideras URI:n igen och öppnas i användarens standardwebbläsare/standardprogram för schemat — Edge hårdkodas inte:
+  - körs klienten redan i den inloggade användarens interaktiva session (inte SYSTEM, inte session 0) öppnas URL:en med `Start-Process -FilePath <url>`
+  - körs klienten som SYSTEM eller utanför användarsessionen startas den i den inloggade användarens kontext via PSAppDeployToolkits `Start-ADTProcessAsUser -FilePath explorer.exe -ArgumentList <url> -NoWait` (parametrar som stöds av den medföljande 4.1.8-versionen)
+  - saknas `Start-ADTProcessAsUser` i det läget loggas ett fel och leveransen markeras som `Failed`
 - om användaren klickar acknowledge-knappen registreras leveransen utan att någon URI öppnas
 - om protokollstart misslyckas returneras felet tydligt och meddelandet markeras inte som tyst kvitterat
 
 Begränsningar:
 
 - relativa URL:er som `www.example.com` eller `/path` stöds inte
-- JSON eller andra omslutna värden, t.ex. `'{"url":"https://..."}'`, stöds inte; skicka URL:en direkt
+- endast JSON-objekt med egenskapen `url` stöds; andra omslutna värden stöds inte
 - `ButtonLeftText`/`ButtonRightText` skickas bara om promptkommandot (`Show-ADTInstallationPrompt` eller äldre `Show-InstallationPrompt`) stöder parametern; saknas stöd för vänsterknapp loggas en varning och knappen utelämnas
 - andra scheman, till exempel `file:` eller anpassade interna URI-scheman, blockeras med avsikt
 
@@ -227,7 +247,7 @@ Syntax:
 
 Skriptet exponerar ett strömlinjeformat gränssnitt utan bild- och ljudparametrar. `-DisplayMode` accepterar enbart `AppDeployToolkit` och defaultar till det värdet.
 
-Tidigare bild- och ljudkolumner i SQL-databasen (`AppLogoPath`, `HeroImagePath`, `AppLogoBytes`, `HeroImageBytes`, `AppLogoContentType`, `HeroImageContentType`, `Sound`) samt parametrarna i `dbo.usp_QueueToastMessage` finns kvar som bakåtkompatibilitetsfält för befintliga installationer, men PowerShell-skripten skickar inte längre bild- eller ljuddata och lämnar dessa värden som `NULL`.
+Bildkolumnerna (`AppLogoPath`, `HeroImagePath`, `AppLogoBytes`, `AppLogoContentType`, `HeroImageBytes`, `HeroImageContentType`) och motsvarande parametrar i `dbo.usp_QueueToastMessage` samt kolumner i `dbo.usp_GetPendingToast` är borttagna. Kolumnen `Sound` och parametern `@Sound` finns kvar för kompatibilitet men skickas inte av PowerShell-skripten. Anrop som fortfarande skickar bildparametrar till `dbo.usp_QueueToastMessage` måste uppdateras.
 
 ## `src/Client/Start-ToastClient.ps1`
 
@@ -255,6 +275,7 @@ Klienten:
   - applicerar knapp-/display-mode-stöd
   - applicerar lokal tidsrapportering
   - normaliserar `DisplayMode` till `AppDeployToolkit` för `NULL`-värden och rader som fortfarande saknar leveranshistorik vid uppgradering
+  - tar i befintliga databaser bort beroenden till de obsoleta bildkolumnerna (t.ex. `IX_ToastMessage_Polling`), tar bort själva kolumnerna, återskapar `IX_ToastMessage_Polling` utan bildkolumner och skapar om procedurerna utan bildparametrar. **Bilddata raderas permanent – ta backup först.** Skriptet kan köras om flera gånger.
 
 ### Legacy / stegvis uppgradering
 
@@ -263,7 +284,7 @@ Klienten:
 - `sql/003-toast-button.sql`
 - `sql/004-local-time-reporting.sql`
 
-Kör det konsoliderade skriptet igen vid uppgradering; det lägger till de nullable kolumnerna `Subtitle` och `AcknowledgeButtonText` i befintliga databaser före procedurdefinitionerna. Vid stegvis installation/uppgradering lägger `sql/003-toast-button.sql` till kolumnerna innan de uppdaterade kö- och pollningsprocedurerna skapas. Den nya procedurparametern `@AcknowledgeButtonText` är valfri och ligger sist, så befintliga anrop fungerar oförändrat.
+De stegvisa skripten lägger inte längre till bildkolumnerna men tar inte heller bort dem från befintliga databaser; kör det konsoliderade skriptet (efter backup) för att ta bort dem. Kör det konsoliderade skriptet igen vid uppgradering; det lägger till de nullable kolumnerna `Subtitle` och `AcknowledgeButtonText` i befintliga databaser före procedurdefinitionerna. Vid stegvis installation/uppgradering lägger `sql/003-toast-button.sql` till kolumnerna innan de uppdaterade kö- och pollningsprocedurerna skapas. Den nya procedurparametern `@AcknowledgeButtonText` är valfri och ligger sist, så befintliga anrop fungerar oförändrat.
 
 ## Migration från äldre visningslägen samt bild- och ljudfunktioner
 
@@ -280,7 +301,7 @@ Praktiska följder:
 - `Send-ToastMessage.ps1` accepterar inte längre bild- eller ljudparametrar
 - klientkonfigurationen använder inte längre `InternalPowerShellRepository`
 - `Toast.zip` är borttagen och `Dependencies/PSAppDeployToolkit` är det enda beroendet som behålls
-- SQL-kompatibilitetsfält för bild och ljud ligger kvar i `dbo.ToastMessage` och procedurer för att inte bryta befintliga databaser, men PowerShell-skripten skickar inte längre bild- eller ljuddata
+- bildkolumnerna tas bort från `dbo.ToastMessage` och procedurerna av `sql/Install-BurntToast-SQLserver.sql` (bilddata raderas permanent – ta backup först); `Sound` ligger kvar som kompatibilitetsfält men skickas inte av PowerShell-skripten
 - nya köade meddelanden använder `DisplayMode AppDeployToolkit`
 - tester och modulfunktioner för bildhantering och temporärfilshantering är borttagna
 
