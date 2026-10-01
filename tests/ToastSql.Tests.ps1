@@ -282,20 +282,100 @@ Describe 'ToastSql module' {
             }
         }
 
-        It 'returns null when a protocol action starts successfully' {
+        It 'launches protocol actions in the user context via Start-ADTProcessAsUser and the default handler' {
             InModuleScope ToastSql {
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
                 Mock Start-Process {}
 
-                Invoke-ToastProtocolAction -ButtonArguments 'https://example.com' | Should -Be $null
-                Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'https://example.com' }
+                try {
+                    Invoke-ToastProtocolAction -ButtonArguments 'https://github.com/DambergC/BurntToast-SQLserver' | Should -Be $null
+                    Should -Invoke Start-ADTProcessAsUser -Times 1 -Exactly -ParameterFilter {
+                        $FilePath -like '*explorer.exe' -and
+                        $FilePath -notmatch 'msedge' -and
+                        $ArgumentList.Count -eq 1 -and
+                        $ArgumentList[0] -eq 'https://github.com/DambergC/BurntToast-SQLserver' -and
+                        $NoWait
+                    }
+                    Should -Invoke Start-Process -Times 0
+                } finally {
+                    Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
+                }
             }
         }
 
-        It 'returns an error message when a protocol action fails to start' {
-            InModuleScope ToastSql {
-                Mock Start-Process { throw 'boom' }
+        It 'uses only Start-ADTProcessAsUser parameters supported by the bundled PSAppDeployToolkit version' {
+            $bundledToolkitModule = Get-ChildItem -Path (Join-Path $PSScriptRoot '..\Dependencies\PSAppDeployToolkit') -Filter 'PSAppDeployToolkit.psm1' -Recurse | Select-Object -First 1
+            $bundledToolkitModule | Should -Not -BeNullOrEmpty
 
-                (Invoke-ToastProtocolAction -ButtonArguments 'https://example.com') | Should -Match 'boom'
+            $toolkitAst = [System.Management.Automation.Language.Parser]::ParseFile($bundledToolkitModule.FullName, [ref]$null, [ref]$null)
+            $startAsUserDefinition = $toolkitAst.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Start-ADTProcessAsUser'
+            }, $true)
+            $startAsUserDefinition | Should -Not -BeNullOrEmpty
+
+            $supportedParameterNames = @($startAsUserDefinition.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+            foreach ($parameterName in @('FilePath', 'ArgumentList', 'NoWait')) {
+                $supportedParameterNames | Should -Contain $parameterName
+            }
+        }
+
+        It 'launches mailto protocol actions via Start-ADTProcessAsUser' {
+            InModuleScope ToastSql {
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
+
+                try {
+                    Invoke-ToastProtocolAction -ButtonArguments 'mailto:support@contoso.example' | Should -Be $null
+                    Should -Invoke Start-ADTProcessAsUser -Times 1 -Exactly -ParameterFilter {
+                        $FilePath -like '*explorer.exe' -and $ArgumentList[0] -eq 'mailto:support@contoso.example' -and $NoWait
+                    }
+                } finally {
+                    Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'returns an error message when Start-ADTProcessAsUser fails to start the protocol action' {
+            InModuleScope ToastSql {
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser { throw 'boom' }
+
+                try {
+                    (Invoke-ToastProtocolAction -ButtonArguments 'https://example.com') | Should -Match 'boom'
+                } finally {
+                    Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'rejects invalid, relative, or unsupported URIs in the protocol launcher without starting a process' {
+            InModuleScope ToastSql {
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
+                Mock Start-Process {}
+
+                try {
+                    foreach ($invalidUri in @('/intranet/status', 'www.contoso.com', 'ftp://files.example.com/file', '{"url":"https://github.com/DambergC/BurntToast-SQLserver"}')) {
+                        (Invoke-ToastProtocolAction -ButtonArguments $invalidUri) | Should -Match 'http, https, or mailto'
+                    }
+                    Should -Invoke Start-ADTProcessAsUser -Times 0
+                    Should -Invoke Start-Process -Times 0
+                } finally {
+                    Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'falls back to Start-Process with a warning when Start-ADTProcessAsUser is unavailable' {
+            InModuleScope ToastSql {
+                Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Start-ADTProcessAsUser' }
+                Mock Start-Process {}
+
+                Invoke-ToastProtocolAction -ButtonArguments 'https://example.com' -WarningVariable launchWarnings -WarningAction SilentlyContinue | Should -Be $null
+                Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'https://example.com/' }
+                ($launchWarnings -join ' ') | Should -Match 'Start-ADTProcessAsUser'
             }
         }
     }
@@ -513,7 +593,8 @@ Describe 'ToastSql module' {
                     'Left'
                 }
 
-                Mock Start-Process {}
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
 
                 try {
                     $result = Show-ToastAppDeployToolkitPrompt `
@@ -526,7 +607,7 @@ Describe 'ToastSql module' {
 
                     $result.Selection | Should -Be 'Action'
                     $result.ResultType | Should -Be 'Action'
-                    Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'https://example.com/details' }
+                    Should -Invoke Start-ADTProcessAsUser -Times 1 -ParameterFilter { $FilePath -like '*explorer.exe' -and $ArgumentList[0] -eq 'https://example.com/details' -and $NoWait }
                 } finally {
                     Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
                 }
@@ -548,7 +629,8 @@ Describe 'ToastSql module' {
                     'Right'
                 }
 
-                Mock Start-Process {}
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
 
                 try {
                     $result = Show-ToastAppDeployToolkitPrompt `
@@ -561,7 +643,7 @@ Describe 'ToastSql module' {
 
                     $result.Selection | Should -Be 'Acknowledge'
                     $result.ResultType | Should -Be 'Acknowledge'
-                    Should -Invoke Start-Process -Times 0
+                    Should -Invoke Start-ADTProcessAsUser -Times 0
                 } finally {
                     Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
                 }
@@ -583,7 +665,8 @@ Describe 'ToastSql module' {
                     'Left'
                 }
 
-                Mock Start-Process {}
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
 
                 try {
                     $result = Show-ToastAppDeployToolkitPrompt `
@@ -595,7 +678,7 @@ Describe 'ToastSql module' {
 
                     $result.Selection | Should -Be 'Action'
                     $result.ResultType | Should -Be 'Dismiss'
-                    Should -Invoke Start-Process -Times 0
+                    Should -Invoke Start-ADTProcessAsUser -Times 0
                 } finally {
                     Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
                 }
@@ -618,7 +701,8 @@ Describe 'ToastSql module' {
                     $ButtonLeftText
                 }
 
-                Mock Start-Process {}
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
 
                 try {
                     $result = Show-ToastAppDeployToolkitPrompt `
@@ -634,7 +718,7 @@ Describe 'ToastSql module' {
                     $script:capturedPromptParameters.ButtonRightText | Should -Be 'Stäng'
                     $result.Selection | Should -Be 'Action'
                     $result.ResultType | Should -Be 'Action'
-                    Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'https://github.com/DambergC/BurntToast-SQLserver' }
+                    Should -Invoke Start-ADTProcessAsUser -Times 1 -ParameterFilter { $FilePath -like '*explorer.exe' -and $ArgumentList[0] -eq 'https://github.com/DambergC/BurntToast-SQLserver' -and $NoWait }
                 } finally {
                     Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
                     Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
@@ -655,7 +739,8 @@ Describe 'ToastSql module' {
                     $ButtonRightText
                 }
 
-                Mock Start-Process {}
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
 
                 try {
                     $result = Show-ToastAppDeployToolkitPrompt `
@@ -669,7 +754,7 @@ Describe 'ToastSql module' {
 
                     $result.Selection | Should -Be 'Acknowledge'
                     $result.ResultType | Should -Be 'Acknowledge'
-                    Should -Invoke Start-Process -Times 0
+                    Should -Invoke Start-ADTProcessAsUser -Times 0
                 } finally {
                     Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
                 }
@@ -718,7 +803,8 @@ Describe 'ToastSql module' {
                     $ButtonLeftText
                 }
 
-                Mock Start-Process {}
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
 
                 try {
                     $result = Show-ToastAppDeployToolkitPrompt `
@@ -732,7 +818,7 @@ Describe 'ToastSql module' {
                     $script:capturedPromptParameters.ButtonLeftText | Should -Be 'Senare'
                     $script:capturedPromptParameters.ButtonRightText | Should -Be 'Stäng'
                     $result.ResultType | Should -Be 'Dismiss'
-                    Should -Invoke Start-Process -Times 0
+                    Should -Invoke Start-ADTProcessAsUser -Times 0
                 } finally {
                     Remove-Item Function:\Show-InstallationPrompt -ErrorAction SilentlyContinue
                     Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
@@ -752,7 +838,8 @@ Describe 'ToastSql module' {
                     'OK'
                 }
 
-                Mock Start-Process {}
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
 
                 try {
                     $result = Show-ToastAppDeployToolkitPrompt `
@@ -768,7 +855,7 @@ Describe 'ToastSql module' {
                     $script:capturedPromptParameters.ContainsKey('ButtonLeftText') | Should -BeFalse
                     $script:capturedPromptParameters.ContainsKey('ButtonRightText') | Should -BeFalse
                     $result.ResultType | Should -Be 'Acknowledge'
-                    Should -Invoke Start-Process -Times 0
+                    Should -Invoke Start-ADTProcessAsUser -Times 0
                 } finally {
                     Remove-Item Function:\Show-InstallationPrompt -ErrorAction SilentlyContinue
                     Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue

@@ -187,7 +187,8 @@ Fler exempel:
 
 Beteende:
 
-- om användaren klickar action-knappen och det är en `Protocol`-knapp öppnas URI:n via `Start-Process`, dvs. i standardwebbläsaren/standardprogrammet för schemat
+- om användaren klickar action-knappen och det är en `Protocol`-knapp valideras URI:n igen och öppnas i den inloggade användarens kontext via PSAppDeployToolkits `Start-ADTProcessAsUser` (`-FilePath explorer.exe -ArgumentList <url> -NoWait`, kompatibelt med den medföljande 4.1.8-versionen). `explorer.exe` lämnar över URI:n till användarens standardwebbläsare/standardprogram för schemat — Edge hårdkodas inte
+- om den laddade AppDeployToolkit-versionen saknar `Start-ADTProcessAsUser` (t.ex. äldre `Show-InstallationPrompt`-varianter) loggas en varning och URI:n öppnas i stället med `Start-Process` i klientens session
 - om användaren klickar acknowledge-knappen registreras leveransen utan att någon URI öppnas
 - om protokollstart misslyckas returneras felet tydligt och meddelandet markeras inte som tyst kvitterat
 

@@ -707,7 +707,25 @@ function Invoke-ToastProtocolAction {
     )
 
     try {
-        Start-Process -FilePath $ButtonArguments -ErrorAction Stop | Out-Null
+        $protocolUri = Resolve-ToastProtocolUri -ButtonArguments $ButtonArguments
+        if ($null -eq $protocolUri) {
+            throw 'Protocol actions support only absolute http, https, or mailto URIs.'
+        }
+
+        $startAsUserCommand = Get-Command -Name 'Start-ADTProcessAsUser' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $startAsUserCommand) {
+            Write-Warning "AppDeployToolkit command 'Start-ADTProcessAsUser' is not available; opening '$($protocolUri.AbsoluteUri)' with Start-Process in the current session instead."
+            Start-Process -FilePath $protocolUri.AbsoluteUri -ErrorAction Stop | Out-Null
+            return $null
+        }
+
+        # explorer.exe hands the URI to the user's default browser/protocol handler.
+        $shellPath = [System.IO.Path]::Combine([System.Environment]::GetFolderPath('Windows'), 'explorer.exe')
+        & $startAsUserCommand `
+            -FilePath $shellPath `
+            -ArgumentList @($protocolUri.AbsoluteUri) `
+            -NoWait `
+            -ErrorAction Stop | Out-Null
         return $null
     } catch {
         return $_.Exception.Message
