@@ -10,9 +10,10 @@ param(
     [Nullable[int]]$RepeatIntervalSeconds,
     [Nullable[int]]$RepeatIntervalMinutes,
     [Nullable[int]]$RepeatCount,
-    [Parameter(HelpMessage='Optional text shown on a single toast action button.')][string]$ButtonText,
-    [Parameter(HelpMessage='Optional button argument, typically an absolute URL or protocol URI.')][string]$ButtonArguments,
+    [Parameter(HelpMessage='Optional text shown on the extra action button to the left of the acknowledgement button.')][string]$ButtonText,
+    [Parameter(HelpMessage='Optional button argument. For Protocol buttons use an absolute http, https, or mailto URI that opens in the default application/browser.')][string]$ButtonArguments,
     [Parameter(HelpMessage='Button activation type. Use Protocol to open a URI or Dismiss to close the toast.')][ValidateSet('Protocol','Dismiss')][string]$ButtonActivationType,
+    [Parameter(HelpMessage='Optional text shown on the right acknowledgement button. Defaults to Acknowledge.')][AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText,
     [ValidateSet('Default','Reminder','Alarm','IncomingCall')][string]$Scenario = 'Default',
     [ValidateSet('AppDeployToolkit')][string]$DisplayMode = 'AppDeployToolkit'
 )
@@ -104,6 +105,9 @@ if (-not [string]::IsNullOrWhiteSpace([string]$ButtonActivationType)) {
 }
 
 $buttonSettings = Resolve-ToastButtonSettings @buttonParams
+$resolvedAcknowledgeButtonText = Resolve-ToastAcknowledgeButtonText `
+    -AcknowledgeButtonText $AcknowledgeButtonText `
+    -ButtonText $(if ($null -ne $buttonSettings) { $buttonSettings.ButtonText } else { $null })
 
 $params = @{
     GroupName = $GroupName
@@ -147,6 +151,13 @@ EXEC dbo.usp_QueueToastMessage
     @Scenario = @Scenario,
     @DisplayMode = @DisplayMode
 '@
+
+# Only send @AcknowledgeButtonText when a custom label is requested so databases
+# that have not yet been upgraded keep working for default acknowledgement buttons.
+if ($null -ne $resolvedAcknowledgeButtonText) {
+    $params['AcknowledgeButtonText'] = $resolvedAcknowledgeButtonText
+    $sql = $sql.TrimEnd() + ",`r`n    @AcknowledgeButtonText = @AcknowledgeButtonText"
+}
 
 $result = Invoke-ToastSql `
     -ConnectionString $conn `

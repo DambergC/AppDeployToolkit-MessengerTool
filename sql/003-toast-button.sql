@@ -31,6 +31,9 @@ IF COL_LENGTH('dbo.ToastMessage', 'DisplayMode') IS NULL
 IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL
     ALTER TABLE dbo.ToastMessage ADD Subtitle nvarchar(200) NULL;
 
+IF COL_LENGTH('dbo.ToastMessage', 'AcknowledgeButtonText') IS NULL
+    ALTER TABLE dbo.ToastMessage ADD AcknowledgeButtonText nvarchar(200) NULL;
+
     GO
 
 WHILE 1 = 1
@@ -98,7 +101,8 @@ CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
     @Scenario varchar(20) = 'Default',
     @DisplayMode varchar(20) = 'AppDeployToolkit',
     @ResolvedScenario varchar(20) = NULL OUTPUT,
-    @Subtitle nvarchar(200) = NULL
+    @Subtitle nvarchar(200) = NULL,
+    @AcknowledgeButtonText nvarchar(200) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -121,6 +125,7 @@ BEGIN
     SET @Scenario = NULLIF(LTRIM(RTRIM(@Scenario)), '');
     SET @DisplayMode = NULLIF(LTRIM(RTRIM(@DisplayMode)), '');
     SET @Subtitle = NULLIF(LTRIM(RTRIM(@Subtitle)), '');
+    SET @AcknowledgeButtonText = NULLIF(LTRIM(RTRIM(@AcknowledgeButtonText)), '');
 
     IF @Scenario IS NULL
         SET @Scenario = 'Default';
@@ -144,6 +149,9 @@ BEGIN
 
     IF @ButtonText IS NOT NULL AND @ButtonActivationType IS NULL
         SET @ButtonActivationType = 'Protocol';
+
+    IF @AcknowledgeButtonText IS NOT NULL AND @ButtonText IS NOT NULL AND UPPER(@AcknowledgeButtonText) = UPPER(@ButtonText)
+        THROW 50032, 'AcknowledgeButtonText must differ from ButtonText.', 1;
 
     IF @ButtonActivationType IS NOT NULL AND @ButtonActivationType NOT IN ('Protocol','Dismiss')
         THROW 50010, 'ButtonActivationType must be Protocol or Dismiss.', 1;
@@ -220,7 +228,8 @@ BEGIN
         ButtonArguments,
         ButtonActivationType,
         Scenario,
-        DisplayMode
+        DisplayMode,
+        AcknowledgeButtonText
     )
     VALUES(
         @GroupId,
@@ -242,7 +251,8 @@ BEGIN
         @ButtonArguments,
         @ButtonActivationType,
         @Scenario,
-        @DisplayMode
+        @DisplayMode,
+        @AcknowledgeButtonText
     );
 
     DECLARE @MessageId bigint = SCOPE_IDENTITY();
@@ -310,6 +320,7 @@ BEGIN
            m.ButtonText,
            m.ButtonArguments,
            m.ButtonActivationType,
+           m.AcknowledgeButtonText,
            m.Scenario,
            CAST('AppDeployToolkit' AS varchar(20)) AS DisplayMode,
            m.RepeatIntervalSeconds,

@@ -127,9 +127,18 @@ Klienten mappar innehållet till ADT-prompten så här:
 - en saknad frivillig `Subtitle` skickas inte, och `Title` kopieras aldrig till `Subtitle`
 - klienten detekterar parameterstöd innan något skickas, så äldre `Show-InstallationPrompt`-varianter inte får okända parametrar
 
-### Action-knapp / protokollknapp
+### Acknowledge-knappen (höger knapp)
 
-Den nuvarande ADT-integrationen stöder **en** valfri action-knapp via vänster knapp i prompten.
+Prompten visar alltid en kvitteringsknapp till höger. Texten styrs med `-AcknowledgeButtonText`:
+
+- utelämnad eller tom → `Acknowledge` (oförändrat standardbeteende)
+- max 200 tecken; inledande/avslutande blanksteg tas bort
+- får inte vara samma text som `-ButtonText` (skiftlägesokänsligt), annars går knapparna inte att skilja åt
+- värdet sparas i den nullable kolumnen `dbo.ToastMessage.AcknowledgeButtonText`; äldre rader utan värde visar `Acknowledge`
+
+### Action-knapp / protokollknapp (vänster knapp)
+
+Den nuvarande ADT-integrationen stöder **en** valfri action-knapp via vänster knapp i prompten, till vänster om acknowledge-knappen. Används inte `-ButtonText` visas bara acknowledge-knappen.
 
 Krav:
 
@@ -138,7 +147,22 @@ Krav:
 - `ButtonArguments` måste vara en **absolut** URI när `ButtonActivationType = 'Protocol'`
 - endast dessa URI-scheman tillåts: `http`, `https`, `mailto`
 
-Exempel:
+Exempel med egen text på acknowledge-knappen (`Stäng`) och en vänsterknapp som öppnar en webbadress i standardwebbläsaren:
+
+```powershell
+.\src\Server\Send-ToastMessage.ps1 `
+  -ConfigPath .\config\config.psd1 `
+  -GroupName 'IT-TEST' `
+  -Title 'Information' `
+  -Subtitle 'Projektet' `
+  -Body 'Öppna projektet på GitHub.' `
+  -ButtonText 'Öppna GitHub' `
+  -ButtonArguments 'https://github.com/DambergC/BurntToast-SQLserver' `
+  -ButtonActivationType 'Protocol' `
+  -AcknowledgeButtonText 'Stäng'
+```
+
+Fler exempel:
 
 ```powershell
 .\src\Server\Send-ToastMessage.ps1 `
@@ -163,13 +187,15 @@ Exempel:
 
 Beteende:
 
-- om användaren klickar action-knappen och det är en `Protocol`-knapp öppnas URI:n via `Start-Process`
+- om användaren klickar action-knappen och det är en `Protocol`-knapp öppnas URI:n via `Start-Process`, dvs. i standardwebbläsaren/standardprogrammet för schemat
 - om användaren klickar acknowledge-knappen registreras leveransen utan att någon URI öppnas
 - om protokollstart misslyckas returneras felet tydligt och meddelandet markeras inte som tyst kvitterat
 
 Begränsningar:
 
 - relativa URL:er som `www.example.com` eller `/path` stöds inte
+- JSON eller andra omslutna värden, t.ex. `'{"url":"https://..."}'`, stöds inte; skicka URL:en direkt
+- `ButtonLeftText`/`ButtonRightText` skickas bara om promptkommandot (`Show-ADTInstallationPrompt` eller äldre `Show-InstallationPrompt`) stöder parametern; saknas stöd för vänsterknapp loggas en varning och knappen utelämnas
 - andra scheman, till exempel `file:` eller anpassade interna URI-scheman, blockeras med avsikt
 
 ## `src/Server/Send-ToastMessage.ps1`
@@ -191,9 +217,12 @@ Syntax:
   [-ButtonText <string>] `
   [-ButtonArguments <string>] `
   [-ButtonActivationType <string>] `
+  [-AcknowledgeButtonText <string>] `
   [-Scenario <string>] `
   [-DisplayMode AppDeployToolkit]
 ```
+
+`-AcknowledgeButtonText` sätter texten på den högra kvitteringsknappen (default `Acknowledge`). `-ButtonText`, `-ButtonArguments` och `-ButtonActivationType` styr den valfria vänstra action-knappen. `@AcknowledgeButtonText` skickas bara till `dbo.usp_QueueToastMessage` när en egen text anges, så meddelanden med standardknapp fungerar även mot databaser som ännu inte uppgraderats.
 
 Skriptet exponerar ett strömlinjeformat gränssnitt utan bild- och ljudparametrar. `-DisplayMode` accepterar enbart `AppDeployToolkit` och defaultar till det värdet.
 
@@ -233,7 +262,7 @@ Klienten:
 - `sql/003-toast-button.sql`
 - `sql/004-local-time-reporting.sql`
 
-Kör det konsoliderade skriptet igen vid uppgradering; det lägger till den nullable `Subtitle`-kolumnen i befintliga databaser före procedurdefinitionerna. Vid stegvis installation/uppgradering lägger `sql/003-toast-button.sql` till kolumnen innan de uppdaterade kö- och pollningsprocedurerna skapas.
+Kör det konsoliderade skriptet igen vid uppgradering; det lägger till de nullable kolumnerna `Subtitle` och `AcknowledgeButtonText` i befintliga databaser före procedurdefinitionerna. Vid stegvis installation/uppgradering lägger `sql/003-toast-button.sql` till kolumnerna innan de uppdaterade kö- och pollningsprocedurerna skapas. Den nya procedurparametern `@AcknowledgeButtonText` är valfri och ligger sist, så befintliga anrop fungerar oförändrat.
 
 ## Migration från äldre visningslägen samt bild- och ljudfunktioner
 
@@ -267,4 +296,5 @@ Fokus i testsviten ligger nu på:
 - AppDeployToolkit-only rendering
 - separat Subtitle-rendering och body-baserad fallback för ADT-varianter som kräver den
 - protokollknappar och URI-validering
+- konfigurerbar text på acknowledge-knappen och separat vänster protokollknapp
 - SQL-kontrakt, leasing och leveransflödeskompatibilitet

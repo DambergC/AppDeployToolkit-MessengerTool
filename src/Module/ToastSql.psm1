@@ -22,6 +22,7 @@ $script:ToastSqlNullParameterDefinitions = @{
     RepeatIntervalSeconds = @{ SqlDbType = [System.Data.SqlDbType]::Int }
     RepeatCount = @{ SqlDbType = [System.Data.SqlDbType]::Int }
     ButtonText = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
+    AcknowledgeButtonText = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
     ButtonArguments = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 2048 }
     MessageId = @{ SqlDbType = [System.Data.SqlDbType]::BigInt }
     LeaseId = @{ SqlDbType = [System.Data.SqlDbType]::UniqueIdentifier }
@@ -208,6 +209,32 @@ function Resolve-ToastButtonSettings {
         ButtonArguments = $normalizedButtonArguments
         ButtonActivationType = $normalizedButtonActivationType
     }
+}
+
+function Resolve-ToastAcknowledgeButtonText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText,
+        [AllowNull()][AllowEmptyString()][string]$ButtonText
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AcknowledgeButtonText)) {
+        return $null
+    }
+
+    $normalizedAcknowledgeButtonText = $AcknowledgeButtonText.Trim()
+    if ($normalizedAcknowledgeButtonText.Length -gt 200) {
+        throw 'AcknowledgeButtonText must be 200 characters or fewer.'
+    }
+
+    if (
+        -not [string]::IsNullOrWhiteSpace($ButtonText) -and
+        $normalizedAcknowledgeButtonText.Equals($ButtonText.Trim(), [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        throw 'AcknowledgeButtonText must differ from ButtonText so the acknowledgement and action buttons can be distinguished.'
+    }
+
+    return $normalizedAcknowledgeButtonText
 }
 
 function Resolve-ToastQueueResult {
@@ -572,7 +599,8 @@ function Show-ToastAppDeployToolkitPrompt {
         [AllowNull()][AllowEmptyString()][string]$Subtitle,
         [string]$ButtonText,
         [string]$ButtonArguments,
-        [string]$ButtonActivationType
+        [string]$ButtonActivationType,
+        [AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText
     )
 
     Ensure-ToastNotificationDependencies -DisplayMode 'AppDeployToolkit'
@@ -586,13 +614,22 @@ function Show-ToastAppDeployToolkitPrompt {
         -ButtonArguments $ButtonArguments `
         -ButtonActivationType $ButtonActivationType
 
-    $acknowledgeButtonText = 'Acknowledge'
+    $resolvedAcknowledgeButtonText = Resolve-ToastAcknowledgeButtonText `
+        -AcknowledgeButtonText $AcknowledgeButtonText `
+        -ButtonText $buttonSettings.ButtonText
+    if ($null -eq $resolvedAcknowledgeButtonText) {
+        $resolvedAcknowledgeButtonText = 'Acknowledge'
+    }
+
     $subtitleFallback = Get-ToastAppDeployToolkitSubtitle -Body $Body
     $titleIsMandatory = Test-ToastCommandParameterMandatory -Command $promptCommand -ParameterName 'Title'
     $subtitleIsMandatory = Test-ToastCommandParameterMandatory -Command $promptCommand -ParameterName 'Subtitle'
     $promptParameters = @{
         Message = [string]$Body
-        ButtonRightText = $acknowledgeButtonText
+    }
+
+    if ($promptCommand.Parameters.Keys -contains 'ButtonRightText') {
+        $promptParameters['ButtonRightText'] = $resolvedAcknowledgeButtonText
     }
 
     if ($promptCommand.Parameters.Keys -contains 'Title') {
@@ -623,7 +660,11 @@ function Show-ToastAppDeployToolkitPrompt {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($buttonSettings.ButtonText)) {
-        $promptParameters['ButtonLeftText'] = [string]$buttonSettings.ButtonText
+        if ($promptCommand.Parameters.Keys -contains 'ButtonLeftText') {
+            $promptParameters['ButtonLeftText'] = [string]$buttonSettings.ButtonText
+        } else {
+            Write-Warning ("AppDeployToolkit prompt command '{0}' does not support ButtonLeftText; omitting action button '{1}' for MessageId {2}." -f $promptCommand.Name, $buttonSettings.ButtonText, $MessageId)
+        }
     }
 
     try {
@@ -634,7 +675,7 @@ function Show-ToastAppDeployToolkitPrompt {
     $selection = Resolve-ToastAppDeployToolkitPromptSelection `
         -Result $result `
         -ActionButtonText $buttonSettings.ButtonText `
-        -AcknowledgeButtonText $acknowledgeButtonText
+        -AcknowledgeButtonText $resolvedAcknowledgeButtonText
 
     if ($selection -eq 'Action' -and $buttonSettings.ButtonActivationType -eq 'Protocol') {
         Write-Verbose ("Launching protocol action for MessageId {0}: {1}" -f $MessageId, $buttonSettings.ProtocolUri.AbsoluteUri)
@@ -690,7 +731,8 @@ function Invoke-ToastNotification {
         -Subtitle ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'Subtitle')) `
         -ButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonText')) `
         -ButtonArguments ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonArguments')) `
-        -ButtonActivationType ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonActivationType')) | Out-Null
+        -ButtonActivationType ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonActivationType')) `
+        -AcknowledgeButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'AcknowledgeButtonText')) | Out-Null
 }
 
 function Import-ToastConfig {
@@ -1010,4 +1052,4 @@ function Invoke-ToastSql {
     }
 }
 
-Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastButtonSettings,Resolve-ToastScenario,Resolve-ToastDisplayMode,Invoke-ToastNotification,Set-ToastClientDependencyOptions
+Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastButtonSettings,Resolve-ToastAcknowledgeButtonText,Resolve-ToastScenario,Resolve-ToastDisplayMode,Invoke-ToastNotification,Set-ToastClientDependencyOptions
