@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory)][string]$GroupName,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Title,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Body,
+    [AllowNull()][AllowEmptyString()][string]$Subtitle,
     [datetime]$ExpiresUtc,
     [switch]$Urgent,
     [Nullable[int]]$RepeatIntervalSeconds,
@@ -108,6 +109,7 @@ $params = @{
     GroupName = $GroupName
     Title = $Title
     Body = $Body
+    Subtitle = $Subtitle
     ExpiresUtc = if ($ExpiresUtc) { $ExpiresUtc } else { $null }
     IsUrgent = $Urgent.IsPresent
     RepeatIntervalSeconds = if ($null -ne $repeatSettings) { $repeatSettings.RepeatIntervalSeconds } else { $null }
@@ -120,7 +122,7 @@ $params = @{
 }
 
 foreach ($parameterName in @(
-    'GroupName','Title','Body','ExpiresUtc',
+    'GroupName','Title','Body','Subtitle','ExpiresUtc',
     'IsUrgent','RepeatIntervalSeconds','RepeatCount',
     'ButtonText','ButtonArguments','ButtonActivationType','Scenario','DisplayMode'
 )) {
@@ -134,6 +136,7 @@ EXEC dbo.usp_QueueToastMessage
     @GroupName = @GroupName,
     @Title = @Title,
     @Body = @Body,
+    @Subtitle = @Subtitle,
     @ExpiresUtc = @ExpiresUtc,
     @IsUrgent = @IsUrgent,
     @RepeatIntervalSeconds = @RepeatIntervalSeconds,

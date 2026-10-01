@@ -50,6 +50,7 @@ BEGIN
         MessageId               bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_ToastMessage PRIMARY KEY,
         GroupId                 int NOT NULL,
         Title                   nvarchar(200) NOT NULL,
+        Subtitle                nvarchar(200) NULL,
         Body                    nvarchar(4000) NOT NULL,
         CreatedUtc              datetime2(0) NOT NULL CONSTRAINT DF_ToastMessage_CreatedUtc DEFAULT (SYSDATETIME()),
         ExpiresUtc              datetime2(0) NULL,
@@ -72,6 +73,9 @@ BEGIN
         CONSTRAINT FK_ToastMessage_Group FOREIGN KEY (GroupId) REFERENCES dbo.ToastGroup(GroupId)
     );
 END;
+
+IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL
+    ALTER TABLE dbo.ToastMessage ADD Subtitle nvarchar(200) NULL;
 
 IF OBJECT_ID('dbo.ToastDelivery', 'U') IS NULL
 BEGIN
@@ -520,7 +524,8 @@ CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
     @ButtonActivationType varchar(20) = NULL,
     @Scenario varchar(20) = 'Default',
     @DisplayMode varchar(20) = 'AppDeployToolkit',
-    @ResolvedScenario varchar(20) = NULL OUTPUT
+    @ResolvedScenario varchar(20) = NULL OUTPUT,
+    @Subtitle nvarchar(200) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -542,6 +547,7 @@ BEGIN
     SET @HeroImageContentType = LOWER(NULLIF(LTRIM(RTRIM(@HeroImageContentType)), ''));
     SET @Scenario = NULLIF(LTRIM(RTRIM(@Scenario)), '');
     SET @DisplayMode = NULLIF(LTRIM(RTRIM(@DisplayMode)), '');
+    SET @Subtitle = NULLIF(LTRIM(RTRIM(@Subtitle)), '');
 
     IF @Scenario IS NULL
         SET @Scenario = 'Default';
@@ -624,6 +630,7 @@ BEGIN
     INSERT dbo.ToastMessage(
         GroupId,
         Title,
+        Subtitle,
         Body,
         ExpiresUtc,
         AppLogoPath,
@@ -645,6 +652,7 @@ BEGIN
     VALUES(
         @GroupId,
         @Title,
+        @Subtitle,
         @Body,
         @ExpiresUtc,
         NULLIF(@AppLogoPath, ''),
@@ -716,6 +724,7 @@ BEGIN
     OUTPUT inserted.MessageId,
            inserted.LeaseId,
            m.Title,
+           m.Subtitle,
            m.Body,
            m.AppLogoPath,
            m.HeroImagePath,

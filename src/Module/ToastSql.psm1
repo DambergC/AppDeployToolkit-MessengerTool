@@ -9,6 +9,7 @@ $script:ToastSupportedScenarios = @('Default','Reminder','Alarm','IncomingCall')
 $script:ToastSqlNullParameterDefinitions = @{
     GroupName = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 128 }
     Title = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
+    Subtitle = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
     Body = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 4000 }
     AppLogoPath = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 1024 }
     HeroImagePath = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 1024 }
@@ -547,13 +548,8 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
 function Get-ToastAppDeployToolkitSubtitle {
     [CmdletBinding()]
     param(
-        [AllowNull()][string]$Title,
         [AllowNull()][string]$Body
     )
-
-    if (-not [string]::IsNullOrWhiteSpace($Title)) {
-        return [string]$Title
-    }
 
     if (-not [string]::IsNullOrWhiteSpace($Body)) {
         $bodyLines = [string]$Body -split "`r`n|`n|`r"
@@ -573,6 +569,7 @@ function Show-ToastAppDeployToolkitPrompt {
         [AllowNull()][long]$MessageId,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Title,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Body,
+        [AllowNull()][AllowEmptyString()][string]$Subtitle,
         [string]$ButtonText,
         [string]$ButtonArguments,
         [string]$ButtonActivationType
@@ -590,31 +587,28 @@ function Show-ToastAppDeployToolkitPrompt {
         -ButtonActivationType $ButtonActivationType
 
     $acknowledgeButtonText = 'Acknowledge'
-    $subtitle = Get-ToastAppDeployToolkitSubtitle -Title $Title -Body $Body
-    $messageText = if ([string]::IsNullOrWhiteSpace($Body)) { $subtitle } else { [string]$Body }
+    $subtitleFallback = Get-ToastAppDeployToolkitSubtitle -Body $Body
     $titleIsMandatory = Test-ToastCommandParameterMandatory -Command $promptCommand -ParameterName 'Title'
     $subtitleIsMandatory = Test-ToastCommandParameterMandatory -Command $promptCommand -ParameterName 'Subtitle'
     $promptParameters = @{
-        Message = $messageText
+        Message = [string]$Body
         ButtonRightText = $acknowledgeButtonText
     }
 
     if ($promptCommand.Parameters.Keys -contains 'Title') {
-        if (($promptCommand.Parameters.Keys -contains 'Subtitle') -and -not [string]::IsNullOrWhiteSpace($Title)) {
+        if (-not [string]::IsNullOrWhiteSpace($Title)) {
             $promptParameters['Title'] = [string]$Title
-        } elseif ($titleIsMandatory -and -not [string]::IsNullOrWhiteSpace($subtitle)) {
-            $promptParameters['Title'] = $subtitle
-        } elseif (-not ($promptCommand.Parameters.Keys -contains 'Subtitle') -and -not [string]::IsNullOrWhiteSpace($subtitle)) {
-            $promptParameters['Title'] = $subtitle
+        } elseif ($titleIsMandatory) {
+            $promptParameters['Title'] = $subtitleFallback
         }
     }
 
-    if (
-        ($promptCommand.Parameters.Keys -contains 'Subtitle') -and
-        -not [string]::IsNullOrWhiteSpace($subtitle) -and
-        ($subtitleIsMandatory -or [string]::IsNullOrWhiteSpace($Title))
-    ) {
-        $promptParameters['Subtitle'] = $subtitle
+    if ($promptCommand.Parameters.Keys -contains 'Subtitle') {
+        if (-not [string]::IsNullOrWhiteSpace($Subtitle)) {
+            $promptParameters['Subtitle'] = [string]$Subtitle
+        } elseif ($subtitleIsMandatory) {
+            $promptParameters['Subtitle'] = $subtitleFallback
+        }
     }
 
     foreach ($iconMapping in @(
@@ -693,6 +687,7 @@ function Invoke-ToastNotification {
         -MessageId (Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'MessageId') `
         -Title ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'Title')) `
         -Body ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'Body')) `
+        -Subtitle ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'Subtitle')) `
         -ButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonText')) `
         -ButtonArguments ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonArguments')) `
         -ButtonActivationType ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonActivationType')) | Out-Null

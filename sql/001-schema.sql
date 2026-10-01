@@ -39,6 +39,7 @@ CREATE TABLE dbo.ToastMessage (
     MessageId               bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_ToastMessage PRIMARY KEY,
     GroupId                 int NOT NULL,
     Title                   nvarchar(200) NOT NULL,
+    Subtitle                nvarchar(200) NULL,
     Body                    nvarchar(4000) NOT NULL,
     CreatedUtc              datetime2(0) NOT NULL CONSTRAINT DF_ToastMessage_CreatedUtc DEFAULT (SYSDATETIME()),
     ExpiresUtc              datetime2(0) NULL,
@@ -115,7 +116,8 @@ CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
     @ButtonActivationType varchar(20) = NULL,
     @Scenario varchar(20) = 'Default',
     @DisplayMode varchar(20) = 'AppDeployToolkit',
-    @ResolvedScenario varchar(20) = NULL OUTPUT
+    @ResolvedScenario varchar(20) = NULL OUTPUT,
+    @Subtitle nvarchar(200) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -217,13 +219,13 @@ BEGIN
     BEGIN TRAN;
 
     INSERT dbo.ToastMessage(
-        GroupId, Title, Body, ExpiresUtc, AppLogoPath, HeroImagePath,
+        GroupId, Title, Subtitle, Body, ExpiresUtc, AppLogoPath, HeroImagePath,
         AppLogoBytes, AppLogoContentType, HeroImageBytes, HeroImageContentType,
         Sound, IsUrgent, RepeatIntervalSeconds, RepeatCount,
         ButtonText, ButtonArguments, ButtonActivationType, Scenario, DisplayMode
     )
     VALUES(
-        @GroupId, @Title, @Body, @ExpiresUtc, NULLIF(@AppLogoPath, ''), NULLIF(@HeroImagePath, ''),
+        @GroupId, @Title, NULLIF(LTRIM(RTRIM(@Subtitle)), ''), @Body, @ExpiresUtc, NULLIF(@AppLogoPath, ''), NULLIF(@HeroImagePath, ''),
         @AppLogoBytes, @AppLogoContentType, @HeroImageBytes, @HeroImageContentType,
         NULLIF(@Sound, ''), ISNULL(@IsUrgent, 0), @RepeatIntervalSeconds, @RepeatCount,
         @ButtonText, @ButtonArguments, @ButtonActivationType, @Scenario, @DisplayMode
@@ -281,6 +283,7 @@ BEGIN
     OUTPUT inserted.MessageId,
            inserted.LeaseId,
            m.Title,
+           m.Subtitle,
            m.Body,
            m.AppLogoPath,
            m.HeroImagePath,
