@@ -2,8 +2,8 @@ $modulePath = Join-Path $PSScriptRoot '..\src\Module\ToastSql.psm1'
 Import-Module $modulePath -Force
 
 Describe 'ToastSql module' {
-    It 'exports Resolve-ToastImageInput for server scripts' {
-        (Get-Command -Name 'Resolve-ToastImageInput' -Module ToastSql -ErrorAction SilentlyContinue) | Should -Not -BeNullOrEmpty
+    It 'does not export removed image-handling functions' {
+        (Get-Command -Name 'Resolve-ToastImageInput' -Module ToastSql -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
     }
 
     It 'builds a valid SQL connection string for integrated security' {
@@ -509,56 +509,67 @@ Describe 'ToastSql module' {
         }
     }
 
-    Context 'image input resolution' {
-        It 'returns null image values when image input is omitted' {
-            InModuleScope ToastSql {
-                $result = Resolve-ToastImageInput -ParameterName 'AppLogo'
+    Context 'Send-ToastMessage public interface and AppDeployToolkit-only behavior' {
+        It 'does not expose image or sound parameters on Send-ToastMessage.ps1' {
+            $serverScriptPath = Join-Path $PSScriptRoot '..\src\Server\Send-ToastMessage.ps1'
+            $command = Get-Command -Name $serverScriptPath
+            $parameterNames = $command.Parameters.Keys
 
-                $result.ImageBytes | Should -Be $null
-                $result.ContentType | Should -Be $null
-            }
+            $parameterNames | Should -Not -Contain 'AppLogoPath'
+            $parameterNames | Should -Not -Contain 'HeroImagePath'
+            $parameterNames | Should -Not -Contain 'AppLogoFilePath'
+            $parameterNames | Should -Not -Contain 'HeroImageFilePath'
+            $parameterNames | Should -Not -Contain 'AppLogoBytes'
+            $parameterNames | Should -Not -Contain 'HeroImageBytes'
+            $parameterNames | Should -Not -Contain 'AppLogoContentType'
+            $parameterNames | Should -Not -Contain 'HeroImageContentType'
+            $parameterNames | Should -Not -Contain 'Sound'
         }
 
-        It 'reads image bytes from a file path and infers the content type' {
-            InModuleScope ToastSql {
-                $filePath = Join-Path ([System.IO.Path]::GetTempPath()) "toastsql-test-$([guid]::NewGuid().ToString('N')).png"
-                $expectedBytes = [byte[]](137,80,78,71,13,10,26,10)
+        It 'exposes expected title, body, repeat, button, and AppDeployToolkit parameters on Send-ToastMessage.ps1' {
+            $serverScriptPath = Join-Path $PSScriptRoot '..\src\Server\Send-ToastMessage.ps1'
+            $command = Get-Command -Name $serverScriptPath
+            $parameterNames = $command.Parameters.Keys
 
-                try {
-                    [System.IO.File]::WriteAllBytes($filePath, $expectedBytes)
-
-                    $result = Resolve-ToastImageInput -FilePath $filePath -ParameterName 'AppLogo'
-
-                    $result.ContentType | Should -Be 'image/png'
-                    ($result.ImageBytes -join ',') | Should -Be ($expectedBytes -join ',')
-                } finally {
-                    Remove-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
-                }
-            }
+            $parameterNames | Should -Contain 'ConfigPath'
+            $parameterNames | Should -Contain 'GroupName'
+            $parameterNames | Should -Contain 'Title'
+            $parameterNames | Should -Contain 'Body'
+            $parameterNames | Should -Contain 'ExpiresUtc'
+            $parameterNames | Should -Contain 'Urgent'
+            $parameterNames | Should -Contain 'RepeatIntervalSeconds'
+            $parameterNames | Should -Contain 'RepeatIntervalMinutes'
+            $parameterNames | Should -Contain 'RepeatCount'
+            $parameterNames | Should -Contain 'ButtonText'
+            $parameterNames | Should -Contain 'ButtonArguments'
+            $parameterNames | Should -Contain 'ButtonActivationType'
+            $parameterNames | Should -Contain 'Scenario'
+            $parameterNames | Should -Contain 'DisplayMode'
         }
 
-        It 'accepts direct image bytes when content type is supplied' {
-            InModuleScope ToastSql {
-                $imageBytes = [byte[]](1,2,3)
-                $result = Resolve-ToastImageInput -ImageBytes $imageBytes -ContentType 'image/png' -ParameterName 'HeroImage'
+        It 'restricts DisplayMode parameter to AppDeployToolkit only and defaults to AppDeployToolkit' {
+            $serverScriptPath = Join-Path $PSScriptRoot '..\src\Server\Send-ToastMessage.ps1'
+            $command = Get-Command -Name $serverScriptPath
+            $displayModeParam = $command.Parameters['DisplayMode']
 
-                $result.ContentType | Should -Be 'image/png'
-                ($result.ImageBytes -join ',') | Should -Be '1,2,3'
-            }
+            $displayModeParam | Should -Not -BeNullOrEmpty
+            $validateSet = $displayModeParam.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $validateSet.ValidValues | Should -Be @('AppDeployToolkit')
         }
 
-        It 'rejects empty binary image payloads' {
-            InModuleScope ToastSql {
-                { Resolve-ToastImageInput -ImageBytes ([byte[]]@()) -ContentType 'image/png' -ParameterName 'AppLogo' } |
-                    Should -Throw '*empty array*'
-            }
-        }
+        It 'does not pass image or sound arguments in Send-ToastMessage.ps1 SQL invocation' {
+            $serverScriptPath = Join-Path $PSScriptRoot '..\src\Server\Send-ToastMessage.ps1'
+            $serverScriptText = Get-Content -Path $serverScriptPath -Raw
 
-        It 'rejects unsupported binary image content types' {
-            InModuleScope ToastSql {
-                { Resolve-ToastImageInput -ImageBytes ([byte[]](1,2,3)) -ContentType 'image/tiff' -ParameterName 'HeroImage' } |
-                    Should -Throw '*content type is required and must be one of*'
-            }
+            $serverScriptText | Should -Not -Match '@AppLogoPath'
+            $serverScriptText | Should -Not -Match '@HeroImagePath'
+            $serverScriptText | Should -Not -Match '@AppLogoBytes'
+            $serverScriptText | Should -Not -Match '@HeroImageBytes'
+            $serverScriptText | Should -Not -Match '@AppLogoContentType'
+            $serverScriptText | Should -Not -Match '@HeroImageContentType'
+            $serverScriptText | Should -Not -Match '@Sound'
+            $serverScriptText | Should -Not -Match 'Resolve-ToastImageInput'
+            $serverScriptText | Should -Not -Match 'Assert-ToastImageResolutionResult'
         }
     }
 
@@ -789,7 +800,13 @@ function Show-InstallationPrompt {
             $schemaScriptText | Should -Match "DisplayMode must be AppDeployToolkit"
             $serverScriptText | Should -Match '\[ValidateSet\(''AppDeployToolkit''\)\]\[string\]\$DisplayMode = ''AppDeployToolkit'''
             $serverScriptText | Should -Match "@DisplayMode = @DisplayMode"
+            $serverScriptText | Should -Not -Match 'AppLogo'
+            $serverScriptText | Should -Not -Match 'HeroImage'
+            $serverScriptText | Should -Not -Match '@Sound'
             $taskScriptText | Should -Match '-STA'
+            $taskScriptText | Should -Match 'Displays SQL-backed AppDeployToolkit notifications'
+            $taskScriptText | Should -Not -Match 'BurntToast'
+            $taskScriptText | Should -Not -Match 'WPF'
             $clientScriptText | Should -Match 'Set-ToastClientDependencyOptions -AppDeployToolkitModulePath'
             $clientScriptText | Should -Match 'AppDeployToolkitModulePath'
             $clientScriptText | Should -Not -Match 'InternalPowerShellRepository'

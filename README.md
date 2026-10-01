@@ -182,15 +182,6 @@ Syntax:
   -Title <string> `
   -Body <string> `
   [-ExpiresUtc <datetime>] `
-  [-AppLogoPath <string>] `
-  [-HeroImagePath <string>] `
-  [-AppLogoFilePath <string>] `
-  [-HeroImageFilePath <string>] `
-  [-AppLogoBytes <byte[]>] `
-  [-HeroImageBytes <byte[]>] `
-  [-AppLogoContentType <string>] `
-  [-HeroImageContentType <string>] `
-  [-Sound <string>] `
   [-Urgent] `
   [-RepeatIntervalSeconds <int>] `
   [-RepeatIntervalMinutes <int>] `
@@ -202,9 +193,9 @@ Syntax:
   [-DisplayMode AppDeployToolkit]
 ```
 
-`-DisplayMode` accepterar nu endast `AppDeployToolkit` och defaultar till det värdet.
+Skriptet exponerar ett strömlinjeformat gränssnitt utan bild- och ljudparametrar. `-DisplayMode` accepterar enbart `AppDeployToolkit` och defaultar till det värdet.
 
-Bild-, sound-, urgent- och scenariofält ligger kvar i SQL-kontraktet för kompatibilitet och validering, men den nuvarande ADT-prompten använder främst titel, brödtext och eventuell knapp.
+Tidigare bild- och ljudkolumner i SQL-databasen (`AppLogoPath`, `HeroImagePath`, `AppLogoBytes`, `HeroImageBytes`, `AppLogoContentType`, `HeroImageContentType`, `Sound`) samt parametrarna i `dbo.usp_QueueToastMessage` finns kvar som bakåtkompatibilitetsfält för befintliga installationer, men PowerShell-skripten skickar inte längre bild- eller ljuddata och lämnar dessa värden som `NULL`.
 
 ## `src/Client/Start-ToastClient.ps1`
 
@@ -240,19 +231,24 @@ Klienten:
 - `sql/003-toast-button.sql`
 - `sql/004-local-time-reporting.sql`
 
-## Migration från äldre visningslägen
+## Migration från äldre visningslägen samt bild- och ljudfunktioner
 
 Den här refaktorn tar bort stöd för:
 
 - `BurntToast`
 - `Wpf`
+- Bildfunktioner (`AppLogoPath`, `HeroImagePath`, `AppLogoFilePath`, `HeroImageFilePath`, `AppLogoBytes`, `HeroImageBytes`, `AppLogoContentType`, `HeroImageContentType`)
+- Ljudfunktioner (`Sound`)
+- Obsolet paketerad artefakt `Toast.zip`
 
 Praktiska följder:
 
+- `Send-ToastMessage.ps1` accepterar inte längre bild- eller ljudparametrar
 - klientkonfigurationen använder inte längre `InternalPowerShellRepository`
-- nya köade meddelanden ska använda `DisplayMode AppDeployToolkit` eller lämna parametern på default
-- uppgraderingsskripten normaliserar gamla `DisplayMode`-värden till `AppDeployToolkit` bara för meddelanden utan leveranshistorik; hämtade meddelanden levereras ändå som ADT i klientflödet
-- tester och klientlogik för WPF/BurntToast är borttagna
+- `Toast.zip` är borttagen och `Dependencies/PSAppDeployToolkit` är det enda beroendet som behålls
+- SQL-kompatibilitetsfält för bild och ljud ligger kvar i `dbo.ToastMessage` och procedurer för att inte bryta befintliga databaser, men PowerShell-skripten skickar inte längre bild- eller ljuddata
+- nya köade meddelanden använder `DisplayMode AppDeployToolkit`
+- tester och modulfunktioner för bildhantering och temporärfilshantering är borttagna
 
 ## Testning
 
