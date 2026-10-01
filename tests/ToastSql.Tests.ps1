@@ -321,6 +321,22 @@ Describe 'ToastSql module' {
             }
         }
 
+        It 'launches mailto protocol actions via Start-ADTProcessAsUser' {
+            InModuleScope ToastSql {
+                function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
+                Mock Start-ADTProcessAsUser {}
+
+                try {
+                    Invoke-ToastProtocolAction -ButtonArguments 'mailto:support@contoso.example' | Should -Be $null
+                    Should -Invoke Start-ADTProcessAsUser -Times 1 -Exactly -ParameterFilter {
+                        $FilePath -like '*explorer.exe' -and $ArgumentList[0] -eq 'mailto:support@contoso.example' -and $NoWait
+                    }
+                } finally {
+                    Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         It 'returns an error message when Start-ADTProcessAsUser fails to start the protocol action' {
             InModuleScope ToastSql {
                 function Start-ADTProcessAsUser { param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoWait) }
@@ -345,7 +361,7 @@ Describe 'ToastSql module' {
                         (Invoke-ToastProtocolAction -ButtonArguments $invalidUri) | Should -Match 'http, https, or mailto'
                     }
                     Should -Invoke Start-ADTProcessAsUser -Times 0
-                    Should -Invoke Start-ADTProcessAsUser -Times 0
+                    Should -Invoke Start-Process -Times 0
                 } finally {
                     Remove-Item Function:\Start-ADTProcessAsUser -ErrorAction SilentlyContinue
                 }
