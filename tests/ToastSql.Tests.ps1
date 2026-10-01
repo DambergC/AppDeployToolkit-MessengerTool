@@ -236,6 +236,45 @@ Describe 'ToastSql module' {
             }
         }
 
+        It 'normalizes custom acknowledgement button text and treats blanks as the default' {
+            Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText '  Stäng  ' | Should -Be 'Stäng'
+            Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText '   ' | Should -Be $null
+            Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText $null | Should -Be $null
+            Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText 'Stäng' -ButtonText 'Öppna GitHub' | Should -Be 'Stäng'
+        }
+
+        It 'rejects acknowledgement button text that collides with the action button text or is too long' {
+            { Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText 'open' -ButtonText ' Open ' } | Should -Throw '*must differ from ButtonText*'
+            { Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText ('x' * 201) } | Should -Throw '*200 characters*'
+        }
+
+        It 'rejects AppDeployToolkit protocol buttons with invalid or host-less URIs' {
+            InModuleScope ToastSql {
+                foreach ($invalidUri in @('www.github.com', 'not a uri', '{"url":"https://github.com"}')) {
+                    {
+                        Resolve-ToastAppDeployToolkitButtonSettings `
+                            -ButtonText 'Öppna GitHub' `
+                            -ButtonArguments $invalidUri `
+                            -ButtonActivationType 'Protocol'
+                    } | Should -Throw '*absolute URI*'
+                }
+            }
+        }
+
+        It 'maps custom acknowledgement button text results to acknowledgement' {
+            InModuleScope ToastSql {
+                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Stäng' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Acknowledge'
+                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Öppna GitHub' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Action'
+            }
+        }
+
+        It 'defines a nullable AcknowledgeButtonText SQL parameter with the ButtonText column size' {
+            InModuleScope ToastSql {
+                $script:ToastSqlNullParameterDefinitions.AcknowledgeButtonText.SqlDbType | Should -Be ([System.Data.SqlDbType]::NVarChar)
+                $script:ToastSqlNullParameterDefinitions.AcknowledgeButtonText.Size | Should -Be 200
+            }
+        }
+
         It 'defines a nullable Subtitle SQL parameter with the Title column size' {
             InModuleScope ToastSql {
                 $script:ToastSqlNullParameterDefinitions.Subtitle.SqlDbType | Should -Be ([System.Data.SqlDbType]::NVarChar)
@@ -563,6 +602,207 @@ Describe 'ToastSql module' {
             }
         }
 
+        It 'passes custom acknowledgement text on the right and a separate left protocol button that opens the default browser' {
+            InModuleScope ToastSql {
+                function Show-ADTInstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [string]$Subtitle,
+                        [string]$Message,
+                        [string]$ButtonLeftText,
+                        [string]$ButtonRightText,
+                        [string]$Icon
+                    )
+
+                    $script:capturedPromptParameters = $PSBoundParameters
+                    $ButtonLeftText
+                }
+
+                Mock Start-Process {}
+
+                try {
+                    $result = Show-ToastAppDeployToolkitPrompt `
+                        -MessageId 42 `
+                        -Title 'Information' `
+                        -Body 'Öppna projektet på GitHub.' `
+                        -ButtonText 'Öppna GitHub' `
+                        -ButtonArguments 'https://github.com/DambergC/BurntToast-SQLserver' `
+                        -ButtonActivationType 'Protocol' `
+                        -AcknowledgeButtonText 'Stäng'
+
+                    $script:capturedPromptParameters.ButtonLeftText | Should -Be 'Öppna GitHub'
+                    $script:capturedPromptParameters.ButtonRightText | Should -Be 'Stäng'
+                    $result.Selection | Should -Be 'Action'
+                    $result.ResultType | Should -Be 'Action'
+                    Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'https://github.com/DambergC/BurntToast-SQLserver' }
+                } finally {
+                    Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'treats a click on the custom acknowledgement button as acknowledgement without opening the browser' {
+            InModuleScope ToastSql {
+                function Show-ADTInstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [string]$Message,
+                        [string]$ButtonLeftText,
+                        [string]$ButtonRightText
+                    )
+
+                    $ButtonRightText
+                }
+
+                Mock Start-Process {}
+
+                try {
+                    $result = Show-ToastAppDeployToolkitPrompt `
+                        -MessageId 42 `
+                        -Title 'Information' `
+                        -Body 'Body' `
+                        -ButtonText 'Öppna GitHub' `
+                        -ButtonArguments 'https://github.com/DambergC/BurntToast-SQLserver' `
+                        -ButtonActivationType 'Protocol' `
+                        -AcknowledgeButtonText 'Stäng'
+
+                    $result.Selection | Should -Be 'Acknowledge'
+                    $result.ResultType | Should -Be 'Acknowledge'
+                    Should -Invoke Start-Process -Times 0
+                } finally {
+                    Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'defaults the acknowledgement button text to Acknowledge and omits the left button when no action is configured' {
+            InModuleScope ToastSql {
+                function Show-ADTInstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [string]$Message,
+                        [string]$ButtonLeftText,
+                        [string]$ButtonRightText
+                    )
+
+                    $script:capturedPromptParameters = $PSBoundParameters
+                    'Acknowledge'
+                }
+
+                try {
+                    $result = Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Title' -Body 'Body' -AcknowledgeButtonText '  '
+
+                    $result.ResultType | Should -Be 'Acknowledge'
+                    $script:capturedPromptParameters.ButtonRightText | Should -Be 'Acknowledge'
+                    $script:capturedPromptParameters.ContainsKey('ButtonLeftText') | Should -BeFalse
+                } finally {
+                    Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'passes custom acknowledgement text and a dismiss action button to older Show-InstallationPrompt variants' {
+            InModuleScope ToastSql {
+                function Show-InstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [string]$Message,
+                        [string]$ButtonLeftText,
+                        [string]$ButtonRightText,
+                        [string]$Icon
+                    )
+
+                    $script:capturedPromptParameters = $PSBoundParameters
+                    $ButtonLeftText
+                }
+
+                Mock Start-Process {}
+
+                try {
+                    $result = Show-ToastAppDeployToolkitPrompt `
+                        -MessageId 42 `
+                        -Title 'Title' `
+                        -Body 'Body' `
+                        -ButtonText 'Senare' `
+                        -ButtonActivationType 'Dismiss' `
+                        -AcknowledgeButtonText 'Stäng'
+
+                    $script:capturedPromptParameters.ButtonLeftText | Should -Be 'Senare'
+                    $script:capturedPromptParameters.ButtonRightText | Should -Be 'Stäng'
+                    $result.ResultType | Should -Be 'Dismiss'
+                    Should -Invoke Start-Process -Times 0
+                } finally {
+                    Remove-Item Function:\Show-InstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'only passes button parameters supported by the prompt command' {
+            InModuleScope ToastSql {
+                function Show-InstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [string]$Message
+                    )
+
+                    $script:capturedPromptParameters = $PSBoundParameters
+                    'OK'
+                }
+
+                Mock Start-Process {}
+
+                try {
+                    $result = Show-ToastAppDeployToolkitPrompt `
+                        -MessageId 42 `
+                        -Title 'Title' `
+                        -Body 'Body' `
+                        -ButtonText 'Öppna GitHub' `
+                        -ButtonArguments 'https://github.com/DambergC/BurntToast-SQLserver' `
+                        -ButtonActivationType 'Protocol' `
+                        -AcknowledgeButtonText 'Stäng' `
+                        -WarningAction SilentlyContinue
+
+                    $script:capturedPromptParameters.ContainsKey('ButtonLeftText') | Should -BeFalse
+                    $script:capturedPromptParameters.ContainsKey('ButtonRightText') | Should -BeFalse
+                    $result.ResultType | Should -Be 'Acknowledge'
+                    Should -Invoke Start-Process -Times 0
+                } finally {
+                    Remove-Item Function:\Show-InstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'rejects unsupported protocol URI schemes before showing the prompt' {
+            InModuleScope ToastSql {
+                function Show-ADTInstallationPrompt {
+                    param([string]$Title, [string]$Message, [string]$ButtonLeftText, [string]$ButtonRightText)
+                    $script:promptShown = $true
+                }
+
+                $script:promptShown = $false
+                try {
+                    {
+                        Show-ToastAppDeployToolkitPrompt `
+                            -MessageId 42 `
+                            -Title 'Title' `
+                            -Body 'Body' `
+                            -ButtonText 'Öppna' `
+                            -ButtonArguments 'ftp://files.example.com/file' `
+                            -ButtonActivationType 'Protocol' `
+                            -AcknowledgeButtonText 'Stäng'
+                    } | Should -Throw '*http, https, or mailto*'
+                    $script:promptShown | Should -BeFalse
+                } finally {
+                    Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name promptShown -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         It 'surfaces AppDeployToolkit protocol-launch failures instead of treating them as acknowledged' {
             InModuleScope ToastSql {
                 function Show-ADTInstallationPrompt {
@@ -632,6 +872,7 @@ Describe 'ToastSql module' {
             $parameterNames | Should -Contain 'ButtonText'
             $parameterNames | Should -Contain 'ButtonArguments'
             $parameterNames | Should -Contain 'ButtonActivationType'
+            $parameterNames | Should -Contain 'AcknowledgeButtonText'
             $parameterNames | Should -Contain 'Scenario'
             $parameterNames | Should -Contain 'DisplayMode'
         }
@@ -658,6 +899,8 @@ Describe 'ToastSql module' {
             $serverScriptText | Should -Not -Match '@HeroImageContentType'
             $serverScriptText | Should -Not -Match '@Sound'
             $serverScriptText | Should -Match '@Subtitle = @Subtitle'
+            $serverScriptText | Should -Match '@AcknowledgeButtonText = @AcknowledgeButtonText'
+            $serverScriptText | Should -Match 'Resolve-ToastAcknowledgeButtonText'
             $serverScriptText | Should -Not -Match 'Resolve-ToastImageInput'
             $serverScriptText | Should -Not -Match 'Assert-ToastImageResolutionResult'
         }
@@ -749,6 +992,7 @@ function Show-InstallationPrompt {
                     ButtonText = 'Open'
                     ButtonArguments = 'https://example.com'
                     ButtonActivationType = 'Protocol'
+                    AcknowledgeButtonText = 'Stäng'
                 }
 
                 Invoke-ToastNotification -ToastRow $row
@@ -761,7 +1005,33 @@ function Show-InstallationPrompt {
                     $Body -eq 'Body' -and
                     $ButtonText -eq 'Open' -and
                     $ButtonArguments -eq 'https://example.com' -and
-                    $ButtonActivationType -eq 'Protocol'
+                    $ButtonActivationType -eq 'Protocol' -and
+                    $AcknowledgeButtonText -eq 'Stäng'
+                }
+            }
+        }
+
+        It 'routes legacy rows without AcknowledgeButtonText with an empty acknowledgement label' {
+            InModuleScope ToastSql {
+                Mock Ensure-ToastNotificationDependencies {}
+                Mock Show-ToastAppDeployToolkitPrompt { [pscustomobject]@{ Selection = 'Acknowledge'; ResultType = 'Acknowledge' } }
+
+                $table = [System.Data.DataTable]::new()
+                foreach ($columnName in @('MessageId','Title','Body','DisplayMode','AcknowledgeButtonText')) {
+                    [void]$table.Columns.Add($columnName)
+                }
+                $dataRow = $table.NewRow()
+                $dataRow['MessageId'] = 42
+                $dataRow['Title'] = 'Title'
+                $dataRow['Body'] = 'Body'
+                $dataRow['DisplayMode'] = 'AppDeployToolkit'
+                $dataRow['AcknowledgeButtonText'] = [System.DBNull]::Value
+                $table.Rows.Add($dataRow)
+
+                Invoke-ToastNotification -ToastRow $dataRow
+
+                Should -Invoke Show-ToastAppDeployToolkitPrompt -Times 1 -ParameterFilter {
+                    [string]::IsNullOrEmpty($AcknowledgeButtonText)
                 }
             }
         }
@@ -899,6 +1169,15 @@ function Show-InstallationPrompt {
             $buttonScriptText | Should -Match "CAST\('AppDeployToolkit' AS varchar\(20\)\) AS DisplayMode"
             $buttonScriptText | Should -Match "m\.AppLogoBytes"
             $buttonScriptText | Should -Match "m\.HeroImageBytes"
+            $buttonScriptText | Should -Match "IF COL_LENGTH\('dbo\.ToastMessage', 'AcknowledgeButtonText'\) IS NULL\s+ALTER TABLE dbo\.ToastMessage ADD AcknowledgeButtonText nvarchar\(200\) NULL"
+            $buttonScriptText | Should -Match "@Subtitle nvarchar\(200\) = NULL,\s*@AcknowledgeButtonText nvarchar\(200\) = NULL\s*AS"
+            $buttonScriptText | Should -Match "SET @AcknowledgeButtonText = NULLIF\(LTRIM\(RTRIM\(@AcknowledgeButtonText\)\), ''\)"
+            $buttonScriptText | Should -Match "THROW 50032, 'AcknowledgeButtonText must differ from ButtonText\.'"
+            $buttonScriptText | Should -Match "DisplayMode,\s*AcknowledgeButtonText\s*\)"
+            $buttonScriptText | Should -Match "@DisplayMode,\s*@AcknowledgeButtonText\s*\)"
+            $buttonScriptText | Should -Match "m\.AcknowledgeButtonText"
+            $buttonScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'AcknowledgeButtonText') IS NULL") |
+                Should -BeLessThan $buttonScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
             $buttonScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL") |
                 Should -BeLessThan $buttonScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
             $schemaScriptText | Should -Match "DisplayMode must be AppDeployToolkit"
@@ -907,6 +1186,13 @@ function Show-InstallationPrompt {
             $schemaScriptText | Should -Match "Title, Subtitle, Body"
             $schemaScriptText | Should -Match "NULLIF\(LTRIM\(RTRIM\(@Subtitle\)\), ''\)"
             $schemaScriptText | Should -Match "m\.Subtitle"
+            $schemaScriptText | Should -Match "AcknowledgeButtonText\s+nvarchar\(200\) NULL"
+            $schemaScriptText | Should -Match "@Subtitle nvarchar\(200\) = NULL,\s*@AcknowledgeButtonText nvarchar\(200\) = NULL\s*AS"
+            $schemaScriptText | Should -Match "SET @AcknowledgeButtonText = NULLIF\(LTRIM\(RTRIM\(@AcknowledgeButtonText\)\), ''\)"
+            $schemaScriptText | Should -Match "THROW 50032, 'AcknowledgeButtonText must differ from ButtonText\.'"
+            $schemaScriptText | Should -Match "DisplayMode,\s*AcknowledgeButtonText\s*\)"
+            $schemaScriptText | Should -Match "@DisplayMode,\s*@AcknowledgeButtonText\s*\)"
+            $schemaScriptText | Should -Match "m\.AcknowledgeButtonText"
             $serverScriptText | Should -Match '\[ValidateSet\(''AppDeployToolkit''\)\]\[string\]\$DisplayMode = ''AppDeployToolkit'''
             $serverScriptText | Should -Match "@DisplayMode = @DisplayMode"
             $serverScriptText | Should -Match '\[AllowNull\(\)\]\[AllowEmptyString\(\)\]\[string\]\$Subtitle'
@@ -916,6 +1202,15 @@ function Show-InstallationPrompt {
             $installScriptText | Should -Match "SET @Subtitle = NULLIF\(LTRIM\(RTRIM\(@Subtitle\)\), ''\)"
             $installScriptText | Should -Match "Title,\s*Subtitle,\s*Body"
             $installScriptText | Should -Match "m\.Subtitle"
+            $installScriptText | Should -Match "IF COL_LENGTH\('dbo\.ToastMessage', 'AcknowledgeButtonText'\) IS NULL\s+ALTER TABLE dbo\.ToastMessage ADD AcknowledgeButtonText nvarchar\(200\) NULL"
+            $installScriptText | Should -Match "@Subtitle nvarchar\(200\) = NULL,\s*@AcknowledgeButtonText nvarchar\(200\) = NULL\s*AS"
+            $installScriptText | Should -Match "SET @AcknowledgeButtonText = NULLIF\(LTRIM\(RTRIM\(@AcknowledgeButtonText\)\), ''\)"
+            $installScriptText | Should -Match "THROW 50032, 'AcknowledgeButtonText must differ from ButtonText\.'"
+            $installScriptText | Should -Match "DisplayMode,\s*AcknowledgeButtonText\s*\)"
+            $installScriptText | Should -Match "@DisplayMode,\s*@AcknowledgeButtonText\s*\)"
+            $installScriptText | Should -Match "m\.AcknowledgeButtonText"
+            $installScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'AcknowledgeButtonText') IS NULL") |
+                Should -BeLessThan $installScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
             $installScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL") |
                 Should -BeLessThan $installScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
             $serverScriptText | Should -Not -Match 'AppLogo'
