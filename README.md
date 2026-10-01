@@ -35,6 +35,7 @@ Copy-Item .\config\config.example.psd1 .\config\config.psd1
   -ConfigPath .\config\config.psd1 `
   -GroupName 'IT-TEST' `
   -Title 'Testmeddelande' `
+  -Subtitle 'Valfri underrubrik' `
   -Body 'Detta är ett test.'
 ```
 
@@ -121,9 +122,9 @@ Klienten mappar innehållet till ADT-prompten så här:
 
 - `Body` skickas som promptens `Message`
 - när promptvarianten använder ett separat `Title`-fält skickas toastens titel dit
-- `Subtitle` skickas när promptkommandot stöder det **och** varianten behöver det, eller när titeln saknas och en säker fallback måste användas
-- när `Subtitle` behöver fyllas används toastens titel om den finns; annars används första icke-tomma raden från `Body`
-- om både `Title` och `Body` skulle sakna användbar text används fallback-värdet `Notification`
+- en angiven `Subtitle` skickas separat när promptkommandot stöder parametern
+- om en ADT-variant kräver `Subtitle` och ingen underrubrik har angetts används första icke-tomma raden från `Body`; om den saknas används `Notification`
+- en saknad frivillig `Subtitle` skickas inte, och `Title` kopieras aldrig till `Subtitle`
 - klienten detekterar parameterstöd innan något skickas, så äldre `Show-InstallationPrompt`-varianter inte får okända parametrar
 
 ### Action-knapp / protokollknapp
@@ -181,6 +182,7 @@ Syntax:
   -GroupName <string> `
   -Title <string> `
   -Body <string> `
+  [-Subtitle <string>] `
   [-ExpiresUtc <datetime>] `
   [-Urgent] `
   [-RepeatIntervalSeconds <int>] `
@@ -231,6 +233,8 @@ Klienten:
 - `sql/003-toast-button.sql`
 - `sql/004-local-time-reporting.sql`
 
+Kör det konsoliderade skriptet igen vid uppgradering; det lägger till den nullable `Subtitle`-kolumnen i befintliga databaser före procedurdefinitionerna. Vid stegvis installation/uppgradering lägger `sql/003-toast-button.sql` till kolumnen innan de uppdaterade kö- och pollningsprocedurerna skapas.
+
 ## Migration från äldre visningslägen samt bild- och ljudfunktioner
 
 Den här refaktorn tar bort stöd för:
@@ -261,6 +265,6 @@ Invoke-Pester -Path .\tests\ToastSql.Tests.ps1
 Fokus i testsviten ligger nu på:
 
 - AppDeployToolkit-only rendering
-- Subtitle-detektering och fallback
+- separat Subtitle-rendering och body-baserad fallback för ADT-varianter som kräver den
 - protokollknappar och URI-validering
 - SQL-kontrakt, leasing och leveransflödeskompatibilitet

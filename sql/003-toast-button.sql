@@ -28,6 +28,9 @@ IF COL_LENGTH('dbo.ToastMessage', 'Scenario') IS NULL
 IF COL_LENGTH('dbo.ToastMessage', 'DisplayMode') IS NULL
     ALTER TABLE dbo.ToastMessage ADD DisplayMode varchar(20) NULL;
 
+IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL
+    ALTER TABLE dbo.ToastMessage ADD Subtitle nvarchar(200) NULL;
+
     GO
 
 WHILE 1 = 1
@@ -94,7 +97,8 @@ CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
     @ButtonActivationType varchar(20) = NULL,
     @Scenario varchar(20) = 'Default',
     @DisplayMode varchar(20) = 'AppDeployToolkit',
-    @ResolvedScenario varchar(20) = NULL OUTPUT
+    @ResolvedScenario varchar(20) = NULL OUTPUT,
+    @Subtitle nvarchar(200) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -116,6 +120,7 @@ BEGIN
     SET @HeroImageContentType = LOWER(NULLIF(LTRIM(RTRIM(@HeroImageContentType)), ''));
     SET @Scenario = NULLIF(LTRIM(RTRIM(@Scenario)), '');
     SET @DisplayMode = NULLIF(LTRIM(RTRIM(@DisplayMode)), '');
+    SET @Subtitle = NULLIF(LTRIM(RTRIM(@Subtitle)), '');
 
     IF @Scenario IS NULL
         SET @Scenario = 'Default';
@@ -198,6 +203,7 @@ BEGIN
     INSERT dbo.ToastMessage(
         GroupId,
         Title,
+        Subtitle,
         Body,
         ExpiresUtc,
         AppLogoPath,
@@ -219,6 +225,7 @@ BEGIN
     VALUES(
         @GroupId,
         @Title,
+        @Subtitle,
         @Body,
         @ExpiresUtc,
         NULLIF(@AppLogoPath, ''),
@@ -290,6 +297,7 @@ BEGIN
     OUTPUT inserted.MessageId,
            inserted.LeaseId,
            m.Title,
+           m.Subtitle,
            m.Body,
            m.AppLogoPath,
            m.HeroImagePath,

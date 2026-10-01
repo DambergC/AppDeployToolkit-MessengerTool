@@ -65,6 +65,9 @@ IF COL_LENGTH('dbo.ToastMessage', 'HeroImageBytes') IS NULL
 IF COL_LENGTH('dbo.ToastMessage', 'HeroImageContentType') IS NULL
     ALTER TABLE dbo.ToastMessage ADD HeroImageContentType varchar(100) NULL;
 
+IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL
+    ALTER TABLE dbo.ToastMessage ADD Subtitle nvarchar(200) NULL;
+
 IF COL_LENGTH('dbo.ToastMessage', 'Sound') IS NULL
     ALTER TABLE dbo.ToastMessage ADD Sound varchar(20) NULL;
 
@@ -214,7 +217,8 @@ CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage
     @Sound varchar(20) = NULL,
     @IsUrgent bit = 0,
     @RepeatIntervalSeconds int = NULL,
-    @RepeatCount int = NULL
+    @RepeatCount int = NULL,
+    @Subtitle nvarchar(200) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -270,6 +274,7 @@ BEGIN
     INSERT dbo.ToastMessage(
         GroupId,
         Title,
+        Subtitle,
         Body,
         ExpiresUtc,
         AppLogoPath,
@@ -286,6 +291,7 @@ BEGIN
     VALUES(
         @GroupId,
         @Title,
+        NULLIF(LTRIM(RTRIM(@Subtitle)), ''),
         @Body,
         @ExpiresUtc,
         NULLIF(@AppLogoPath, ''),
@@ -352,6 +358,7 @@ BEGIN
     OUTPUT inserted.MessageId,
            inserted.LeaseId,
            m.Title,
+           m.Subtitle,
            m.Body,
            m.AppLogoPath,
            m.HeroImagePath,

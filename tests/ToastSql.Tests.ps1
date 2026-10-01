@@ -231,8 +231,15 @@ Describe 'ToastSql module' {
 
         It 'uses a safe subtitle fallback when the toast title is blank' {
             InModuleScope ToastSql {
-                Get-ToastAppDeployToolkitSubtitle -Title '' -Body "`r`n  First line  `r`nSecond line" | Should -Be 'First line'
-                Get-ToastAppDeployToolkitSubtitle -Title '' -Body '' | Should -Be 'Notification'
+                Get-ToastAppDeployToolkitSubtitle -Body "`r`n  First line  `r`nSecond line" | Should -Be 'First line'
+                Get-ToastAppDeployToolkitSubtitle -Body '' | Should -Be 'Notification'
+            }
+        }
+
+        It 'defines a nullable Subtitle SQL parameter with the Title column size' {
+            InModuleScope ToastSql {
+                $script:ToastSqlNullParameterDefinitions.Subtitle.SqlDbType | Should -Be ([System.Data.SqlDbType]::NVarChar)
+                $script:ToastSqlNullParameterDefinitions.Subtitle.Size | Should -Be 200
             }
         }
 
@@ -255,7 +262,7 @@ Describe 'ToastSql module' {
     }
 
     Context 'AppDeployToolkit prompt construction' {
-        It 'passes Subtitle when the prompt command requires it and preserves the body as the message' {
+        It 'passes an explicit Subtitle separately from Title when Subtitle is required' {
             InModuleScope ToastSql {
                 function Show-ADTInstallationPrompt {
                     param(
@@ -271,13 +278,41 @@ Describe 'ToastSql module' {
                 }
 
                 try {
-                    $result = Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Toast title' -Body 'Toast body'
+                    $result = Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Toast title' -Subtitle 'Toast subtitle' -Body 'Toast body'
 
                     $result.ResultType | Should -Be 'Acknowledge'
                     $script:capturedPromptParameters.Title | Should -Be 'Toast title'
-                    $script:capturedPromptParameters.Subtitle | Should -Be 'Toast title'
+                    $script:capturedPromptParameters.Subtitle | Should -Be 'Toast subtitle'
                     $script:capturedPromptParameters.Message | Should -Be 'Toast body'
                     $script:capturedPromptParameters.ButtonRightText | Should -Be 'Acknowledge'
+                } finally {
+                    Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'uses the body-derived fallback rather than Title when a required Subtitle is omitted' {
+            InModuleScope ToastSql {
+                function Show-ADTInstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [Parameter(Mandatory)][string]$Subtitle,
+                        [string]$Message,
+                        [string]$ButtonRightText,
+                        [string]$Icon
+                    )
+
+                    $script:capturedPromptParameters = $PSBoundParameters
+                    'Acknowledge'
+                }
+
+                try {
+                    Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Toast title' -Body "`r`nBody subtitle`nMore body" | Out-Null
+
+                    $script:capturedPromptParameters.Title | Should -Be 'Toast title'
+                    $script:capturedPromptParameters.Subtitle | Should -Be 'Body subtitle'
+                    $script:capturedPromptParameters.Message | Should -Be "`r`nBody subtitle`nMore body"
                 } finally {
                     Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
                     Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
@@ -314,6 +349,59 @@ Describe 'ToastSql module' {
             }
         }
 
+        It 'passes an explicit Subtitle when the prompt supports an optional Subtitle' {
+            InModuleScope ToastSql {
+                function Show-ADTInstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [string]$Subtitle,
+                        [string]$Message,
+                        [string]$ButtonRightText,
+                        [string]$Icon
+                    )
+
+                    $script:capturedPromptParameters = $PSBoundParameters
+                    'Acknowledge'
+                }
+
+                try {
+                    Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Toast title' -Subtitle 'Toast subtitle' -Body 'Toast body' | Out-Null
+
+                    $script:capturedPromptParameters.Title | Should -Be 'Toast title'
+                    $script:capturedPromptParameters.Subtitle | Should -Be 'Toast subtitle'
+                    $script:capturedPromptParameters.Message | Should -Be 'Toast body'
+                } finally {
+                    Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'treats a blank explicit Subtitle as absent for an optional prompt parameter' {
+            InModuleScope ToastSql {
+                function Show-ADTInstallationPrompt {
+                    param(
+                        [string]$Title,
+                        [string]$Subtitle,
+                        [string]$Message,
+                        [string]$ButtonRightText,
+                        [string]$Icon
+                    )
+
+                    $script:capturedPromptParameters = $PSBoundParameters
+                    'Acknowledge'
+                }
+
+                try {
+                    Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Toast title' -Subtitle '  ' -Body 'Toast body' | Out-Null
+                    $script:capturedPromptParameters.ContainsKey('Subtitle') | Should -BeFalse
+                } finally {
+                    Remove-Item Function:\Show-ADTInstallationPrompt -ErrorAction SilentlyContinue
+                    Remove-Variable -Name capturedPromptParameters -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         It 'does not pass Subtitle to older prompt variants that do not support it' {
             InModuleScope ToastSql {
                 function Show-InstallationPrompt {
@@ -329,7 +417,7 @@ Describe 'ToastSql module' {
                 }
 
                 try {
-                    $result = Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Toast title' -Body 'Toast body'
+                    $result = Show-ToastAppDeployToolkitPrompt -MessageId 42 -Title 'Toast title' -Subtitle 'Toast subtitle' -Body 'Toast body'
 
                     $result.ResultType | Should -Be 'Acknowledge'
                     $script:capturedPromptParameters.Title | Should -Be 'Toast title'
@@ -347,7 +435,7 @@ Describe 'ToastSql module' {
                 function Show-ADTInstallationPrompt {
                     param(
                         [string]$Title,
-                        [string]$Subtitle,
+                        [Parameter(Mandatory)][string]$Subtitle,
                         [string]$Message,
                         [string]$ButtonRightText,
                         [string]$Icon
@@ -535,6 +623,7 @@ Describe 'ToastSql module' {
             $parameterNames | Should -Contain 'GroupName'
             $parameterNames | Should -Contain 'Title'
             $parameterNames | Should -Contain 'Body'
+            $parameterNames | Should -Contain 'Subtitle'
             $parameterNames | Should -Contain 'ExpiresUtc'
             $parameterNames | Should -Contain 'Urgent'
             $parameterNames | Should -Contain 'RepeatIntervalSeconds'
@@ -568,6 +657,7 @@ Describe 'ToastSql module' {
             $serverScriptText | Should -Not -Match '@AppLogoContentType'
             $serverScriptText | Should -Not -Match '@HeroImageContentType'
             $serverScriptText | Should -Not -Match '@Sound'
+            $serverScriptText | Should -Match '@Subtitle = @Subtitle'
             $serverScriptText | Should -Not -Match 'Resolve-ToastImageInput'
             $serverScriptText | Should -Not -Match 'Assert-ToastImageResolutionResult'
         }
@@ -653,6 +743,7 @@ function Show-InstallationPrompt {
                 $row = [pscustomobject]@{
                     MessageId = 42
                     Title = 'Title'
+                    Subtitle = 'Subtitle'
                     Body = 'Body'
                     DisplayMode = 'AppDeployToolkit'
                     ButtonText = 'Open'
@@ -666,6 +757,7 @@ function Show-InstallationPrompt {
                 Should -Invoke Show-ToastAppDeployToolkitPrompt -Times 1 -ParameterFilter {
                     $MessageId -eq 42 -and
                     $Title -eq 'Title' -and
+                    $Subtitle -eq 'Subtitle' -and
                     $Body -eq 'Body' -and
                     $ButtonText -eq 'Open' -and
                     $ButtonArguments -eq 'https://example.com' -and
@@ -770,6 +862,11 @@ function Show-InstallationPrompt {
             $repeatScriptText | Should -Match "@AppLogoContentType varchar\(100\) = NULL"
             $repeatScriptText | Should -Match "@HeroImageBytes varbinary\(max\) = NULL"
             $repeatScriptText | Should -Match "@HeroImageContentType varchar\(100\) = NULL"
+            $repeatScriptText | Should -Match "IF COL_LENGTH\('dbo\.ToastMessage', 'Subtitle'\) IS NULL\s+ALTER TABLE dbo\.ToastMessage ADD Subtitle nvarchar\(200\) NULL"
+            $repeatScriptText | Should -Match "@Subtitle nvarchar\(200\) = NULL"
+            $repeatScriptText | Should -Match "m\.Subtitle"
+            $repeatScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL") |
+                Should -BeLessThan $repeatScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
 
             $buttonScriptText | Should -Match "@AppLogoPath nvarchar\(1024\) = NULL"
             $buttonScriptText | Should -Match "@HeroImagePath nvarchar\(1024\) = NULL"
@@ -787,8 +884,13 @@ function Show-InstallationPrompt {
             $buttonScriptText | Should -Match "@Scenario varchar\(20\) = 'Default'"
             $buttonScriptText | Should -Match "@DisplayMode varchar\(20\) = 'AppDeployToolkit'"
             $buttonScriptText | Should -Match "@ResolvedScenario varchar\(20\) = NULL OUTPUT"
+            $buttonScriptText | Should -Match "@ResolvedScenario varchar\(20\) = NULL OUTPUT,\s*@Subtitle nvarchar\(200\) = NULL"
             $buttonScriptText | Should -Match "Scenario must be Default, Reminder, Alarm, or IncomingCall"
             $buttonScriptText | Should -Match "DisplayMode must be AppDeployToolkit"
+            $buttonScriptText | Should -Match "IF COL_LENGTH\('dbo\.ToastMessage', 'Subtitle'\) IS NULL\s+ALTER TABLE dbo\.ToastMessage ADD Subtitle nvarchar\(200\) NULL"
+            $buttonScriptText | Should -Match "SET @Subtitle = NULLIF\(LTRIM\(RTRIM\(@Subtitle\)\), ''\)"
+            $buttonScriptText | Should -Match "Title,\s*Subtitle,\s*Body"
+            $buttonScriptText | Should -Match "m\.Subtitle"
             $buttonScriptText | Should -Match "ALTER TABLE dbo\.ToastMessage ADD Scenario varchar\(20\) NULL"
             $buttonScriptText | Should -Match "ALTER TABLE dbo\.ToastMessage ADD DisplayMode varchar\(20\) NULL"
             $buttonScriptText | Should -Match "MessagesWithDeliveryHistory AS"
@@ -797,9 +899,25 @@ function Show-InstallationPrompt {
             $buttonScriptText | Should -Match "CAST\('AppDeployToolkit' AS varchar\(20\)\) AS DisplayMode"
             $buttonScriptText | Should -Match "m\.AppLogoBytes"
             $buttonScriptText | Should -Match "m\.HeroImageBytes"
+            $buttonScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL") |
+                Should -BeLessThan $buttonScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
             $schemaScriptText | Should -Match "DisplayMode must be AppDeployToolkit"
+            $schemaScriptText | Should -Match "Subtitle\s+nvarchar\(200\) NULL"
+            $schemaScriptText | Should -Match "@ResolvedScenario varchar\(20\) = NULL OUTPUT,\s*@Subtitle nvarchar\(200\) = NULL"
+            $schemaScriptText | Should -Match "Title, Subtitle, Body"
+            $schemaScriptText | Should -Match "NULLIF\(LTRIM\(RTRIM\(@Subtitle\)\), ''\)"
+            $schemaScriptText | Should -Match "m\.Subtitle"
             $serverScriptText | Should -Match '\[ValidateSet\(''AppDeployToolkit''\)\]\[string\]\$DisplayMode = ''AppDeployToolkit'''
             $serverScriptText | Should -Match "@DisplayMode = @DisplayMode"
+            $serverScriptText | Should -Match '\[AllowNull\(\)\]\[AllowEmptyString\(\)\]\[string\]\$Subtitle'
+            $serverScriptText | Should -Match "@Subtitle = @Subtitle"
+            $installScriptText | Should -Match "IF COL_LENGTH\('dbo\.ToastMessage', 'Subtitle'\) IS NULL\s+ALTER TABLE dbo\.ToastMessage ADD Subtitle nvarchar\(200\) NULL"
+            $installScriptText | Should -Match "@ResolvedScenario varchar\(20\) = NULL OUTPUT,\s*@Subtitle nvarchar\(200\) = NULL"
+            $installScriptText | Should -Match "SET @Subtitle = NULLIF\(LTRIM\(RTRIM\(@Subtitle\)\), ''\)"
+            $installScriptText | Should -Match "Title,\s*Subtitle,\s*Body"
+            $installScriptText | Should -Match "m\.Subtitle"
+            $installScriptText.IndexOf("IF COL_LENGTH('dbo.ToastMessage', 'Subtitle') IS NULL") |
+                Should -BeLessThan $installScriptText.IndexOf('CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage')
             $serverScriptText | Should -Not -Match 'AppLogo'
             $serverScriptText | Should -Not -Match 'HeroImage'
             $serverScriptText | Should -Not -Match '@Sound'
