@@ -96,7 +96,7 @@ public sealed partial class ToastController : ControllerBase
 
             if (rows.Count > 0)
             {
-                _logger.LogInformation("Leased {Count} toast message(s) to {ComputerName} for {Identity}.", rows.Count, computerName, User.Identity?.Name);
+                _logger.LogInformation("Leased {Count} toast message(s) to {ComputerName} for {Identity}.", rows.Count, ForLog(computerName), User.Identity?.Name);
             }
 
             return Ok(rows);
@@ -135,10 +135,9 @@ public sealed partial class ToastController : ControllerBase
             return ValidationError("groups", $"At most {MaxGroupsPerRequest} groups can be registered per request.");
         }
 
-        var tooLong = groups.FirstOrDefault(group => group.Length > MaxGroupNameLength);
-        if (tooLong is not null)
+        if (groups.Any(group => group.Length > MaxGroupNameLength || group.Any(char.IsControl)))
         {
-            return ValidationError("groups", $"Group name '{tooLong}' exceeds {MaxGroupNameLength} characters.");
+            return ValidationError("groups", $"Group names must be at most {MaxGroupNameLength} characters and must not contain control characters.");
         }
 
         var allowedGroups = (_options.AllowedClientGroups ?? []).Where(g => !string.IsNullOrWhiteSpace(g)).ToArray();
@@ -147,7 +146,7 @@ public sealed partial class ToastController : ControllerBase
             var notAllowed = groups.Where(group => !allowedGroups.Contains(group, StringComparer.OrdinalIgnoreCase)).ToArray();
             if (notAllowed.Length > 0)
             {
-                _logger.LogWarning("{Identity} attempted to register {ComputerName} for non-allowed group(s): {Groups}.", User.Identity?.Name, computerName, string.Join(", ", notAllowed));
+                _logger.LogWarning("{Identity} attempted to register {ComputerName} for non-allowed group(s): {Groups}.", User.Identity?.Name, ForLog(computerName), ForLog(string.Join(", ", notAllowed)));
                 return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Group registration not allowed.", detail: $"Group(s) not allowed: {string.Join(", ", notAllowed)}");
             }
         }
@@ -177,7 +176,7 @@ public sealed partial class ToastController : ControllerBase
             return SqlFailure(ex, "register client", computerName!);
         }
 
-        _logger.LogInformation("Registered {ComputerName} for group(s) {Groups} by {Identity}.", computerName, string.Join(", ", groups), User.Identity?.Name);
+        _logger.LogInformation("Registered {ComputerName} for group(s) {Groups} by {Identity}.", ForLog(computerName), ForLog(string.Join(", ", groups)), User.Identity?.Name);
         return Ok(new { computerName, groups });
     }
 
@@ -234,7 +233,7 @@ public sealed partial class ToastController : ControllerBase
         }
         catch (SqlException ex) when (ex.Number == SqlErrorLeaseNotFound)
         {
-            _logger.LogWarning("Lease {LeaseId} for message {MessageId} on {ComputerName} is not active (already recorded or expired).", request.LeaseId, request.MessageId, computerName);
+            _logger.LogWarning("Lease {LeaseId} for message {MessageId} on {ComputerName} is not active (already recorded or expired).", ForLog(request.LeaseId.ToString()), request.MessageId, ForLog(computerName));
             return Problem(statusCode: StatusCodes.Status409Conflict, title: "Lease not active.", detail: ex.Message);
         }
         catch (SqlException ex) when (ex.Number is SqlErrorLeaseRequired or SqlErrorInvalidStatus)
@@ -246,7 +245,7 @@ public sealed partial class ToastController : ControllerBase
             return SqlFailure(ex, "record delivery", computerName);
         }
 
-        _logger.LogInformation("Recorded {Status} for message {MessageId} on {ComputerName} by {Identity}.", status, request.MessageId, computerName, User.Identity?.Name);
+        _logger.LogInformation("Recorded {Status} for message {MessageId} on {ComputerName} by {Identity}.", status, request.MessageId, ForLog(computerName), User.Identity?.Name);
         return NoContent();
     }
 
@@ -288,16 +287,20 @@ public sealed partial class ToastController : ControllerBase
             return null;
         }
 
-        _logger.LogWarning("{Identity} is not allowed to act for computer {ComputerName}.", identityName, computerName);
+        _logger.LogWarning("{Identity} is not allowed to act for computer {ComputerName}.", identityName, ForLog(computerName));
         return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Identity does not match computer name.");
     }
 
     private IActionResult SqlFailure(SqlException ex, string operation, string computerName)
     {
-        _logger.LogError(ex, "SQL error {Number} while trying to {Operation} for {ComputerName}.", ex.Number, operation, computerName);
+        _logger.LogError(ex, "SQL error {Number} while trying to {Operation} for {ComputerName}.", ex.Number, operation, ForLog(computerName));
         // Treat database errors as transient so clients can retry; details stay in the server log.
         return Problem(statusCode: StatusCodes.Status503ServiceUnavailable, title: "Database temporarily unavailable.");
     }
+
+    // Strips line breaks so client-supplied values cannot forge log entries.
+    private static string ForLog(string? value) =>
+        (value ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty);
 
     private BadRequestObjectResult ValidationError(string field, string message)
     {
