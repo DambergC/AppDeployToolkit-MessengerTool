@@ -3,3 +3,8 @@ config/config.psd1
 *.log
 *.tmp
 .vscode/
+
+# ASP.NET Core API build output
+api/bin/
+api/obj/
+api/appsettings.Development.json

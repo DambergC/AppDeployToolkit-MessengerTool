@@ -64,6 +64,49 @@ Copy-Item .\config\config.example.psd1 .\config\config.psd1
 
 SQL Server är alltså kö- och statuslager, inte presentationskanal.
 
+## Webservice-arkitektur (valfri)
+
+Klienterna kan i stället prata med en HTTPS-webservice (`api/`, ASP.NET Core i IIS) som i sin tur anropar SQL Server. Då behöver bara webbservern nå SQL Server på TCP 1433, och inga SQL-uppgifter hanteras på klienterna. Mönstret är inspirerat av webservicen i ConfigMgr Client Health.
+
+```
+Windows-klient ──HTTPS/443──► IIS (ToastApi) ──TCP 1433──► SQL Server
+```
+
+| Endpoint | Funktion |
+|---|---|
+| `GET /api/Clients/{computerName}` | leasar och returnerar väntande meddelanden via `dbo.usp_GetPendingToast` |
+| `POST /api/Clients` | registrerar klient och grupper (`{ "computerName": "PC001", "groups": ["IT-TEST"] }`) |
+| `PUT /api/Clients/{computerName}` | kvitterar leverans via `dbo.usp_RecordToastDelivery` (`{ "messageId": 123, "leaseId": "...", "status": "Delivered", "errorMessage": null }`) |
+
+Webservicen kräver Windows Authentication (Negotiate). Klienten anropar den med `Invoke-RestMethod -UseDefaultCredentials`, så inga lösenord eller API-nycklar lagras på klienterna. Kvittenser är säkra att skicka om: en lease kan bara kvitteras en gång och en upprepad kvittens ger `409` i stället för en extra leverans.
+
+### Tre sätt att driftsätta
+
+1. **Direkt SQL (befintligt)** – `src/Client/Start-ToastClient.ps1` med `config/config.example.psd1`. Klienterna behöver TCP 1433 mot SQL Server.
+2. **Via webservice (nytt)** – `src/Client/Start-ToastClient-API.ps1` med `config/config.example-api.psd1`. Klienterna behöver bara TCP 443 mot webbservern. Visning, lease-, repeat- och kvittenslogik är densamma som i SQL-klienten, men transporten är HTTPS och transienta fel (nätverksfel, timeout, HTTP 408/429/5xx) får retry med backoff.
+3. **Nätverk/brandvägg** – klienter → webbserver TCP 443; webbserver → SQL Server TCP 1433; administratörer → SQL Server TCP 1433 för `Send-ToastMessage.ps1`. Båda klienttyperna kan köras parallellt mot samma databas; stäng klientnätets åtkomst till 1433 först när alla klienter använder API-klienten.
+
+API-klientens konfiguration:
+
+```powershell
+@{
+    ApiUri = 'https://messenger.example.test/api'
+    ClientName = $null
+    ClientGroups = @('IT-TEST')
+    AppDeployToolkitModulePath = 'C:\ToastSql\Dependencies\PSAppDeployToolkit\4.1.8'
+    RequestTimeoutSeconds = 30
+    MaxRetryCount = 3
+    RetryDelaySeconds = 2
+}
+```
+
+```powershell
+.\src\Client\Start-ToastClient-API.ps1 -ConfigPath .\config\config.psd1 -Register -Once
+.\src\Client\Start-ToastClient-API.ps1 -ConfigPath .\config\config.psd1 -PollSeconds 30
+```
+
+Bygg, IIS-installation, SQL-behörigheter för app poolen och behörighetsinställningar beskrivs i [docs/WEBSERVICE-DEPLOYMENT.md](docs/WEBSERVICE-DEPLOYMENT.md).
+
 ## Förutsättningar
 
 ### Server / administration
@@ -310,8 +353,10 @@ Praktiska följder:
 Kör repositoryts Pester-svit:
 
 ```powershell
-Invoke-Pester -Path .\tests\ToastSql.Tests.ps1
+Invoke-Pester -Path .\tests
 ```
+
+`tests/ToastApiClient.Tests.ps1` täcker API-klienten (registrering, leasing/kvittens, felkvittens och retry). Webservicen byggs med `dotnet build .\api\toastapi.csproj`.
 
 Fokus i testsviten ligger nu på:
 
