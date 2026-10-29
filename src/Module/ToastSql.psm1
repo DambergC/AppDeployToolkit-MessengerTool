@@ -553,7 +553,7 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
         }
     }
 
-    if ($Result -is [int] -or $Result -is [long] -or $Result -is [short] -or $Result -is [byte]) {
+    if ($Result -is [int] -or $Result -is [long] -or $Result -is [int16] -or $Result -is [byte]) {
         $numericResult = [int]$Result
         if (-not [string]::IsNullOrWhiteSpace($ActionButtonText) -and $numericResult -eq 0) {
             return 'Action'
