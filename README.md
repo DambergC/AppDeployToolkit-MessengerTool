@@ -1,4 +1,4 @@
-# BurntToast-SQLserver
+# AppDeployToolkit-MessengerTool
 
 Gruppbaserade SQL-köade notifieringar för Windows-klienter med **AppDeployToolkit** som enda stödda presentationslager.
 
