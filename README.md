@@ -2,7 +2,7 @@
 
 Gruppbaserade SQL-köade notifieringar för Windows-klienter med **AppDeployToolkit** som enda stödda presentationslager.
 
-SQL lagrar meddelanden och administratörshanterad grupptillhörighet. Klienterna har enbart läsåtkomst och visar meddelanden via `Show-ADTInstallationPrompt` / `Show-InstallationPrompt`. Lässtatus och repeat-schema sparas per användare i Windows-registret, inte i databasen.
+SQL lagrar meddelanden och administratörshanterad grupptillhörighet. Klienterna har enbart läsåtkomst och visar meddelanden via `Show-ADTInstallationPrompt` / `Show-InstallationPrompt`. Lässtatus och repeat-schema sparas per dator i Windows-registret (HKLM), inte per användare eller i databasen.
 
 ## Quick start
 
@@ -42,13 +42,21 @@ Copy-Item .\config\config.example.psd1 .\config\config.psd1
   -Body 'Detta är ett test.'
 ```
 
-6. Kör klienten i användarens session:
+6. Förbered maskinens registerlagring en gång från **64-bitars PowerShell som administratör** på varje klientdator:
+
+```powershell
+.\deploy\Initialize-ToastReadState.ps1
+```
+
+Skriptet ger gruppen INTERACTIVE (SID `S-1-5-4`, oberoende av Windows-språk) läsning, skrivning av värden och skapande av undernycklar endast under `HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState`, med arv till undernycklar. Det ger inte klienterna administratörsrättigheter, ändringsrätt till ACL eller skrivrätt till föräldern `Software`, programfiler eller konfiguration. Behåll program- och konfigurationsfiler administratörsskyddade. Alla interaktiva användare kan ändra den delade lässtatusen; den är inte ett manipulationsskyddat kvittens-/revisionsregister. Saknade eller nekade rättigheter ger fel; klienten försöker inte höja behörighet eller falla tillbaka till HKCU.
+
+7. Kör klienten **utan elevation** i användarens session, med 64-bitars PowerShell:
 
 ```powershell
 .\src\Client\Start-ToastClient.ps1 -ConfigPath .\config\config.psd1 -Once
 ```
 
-7. För kontinuerlig polling:
+8. För kontinuerlig polling:
 
 ```powershell
 .\src\Client\Start-ToastClient.ps1 -ConfigPath .\config\config.psd1 -PollSeconds 30
@@ -61,7 +69,7 @@ Copy-Item .\config\config.example.psd1 .\config\config.psd1
 - Administratören köar ett meddelande till en grupp i SQL Server.
 - Klienterna pollar SQL Server över TCP 1433.
 - Klientscriptet körs i användarens interaktiva session och visar meddelandet via AppDeployToolkit.
-- Explicit kvittering (eller lyckad action/dismiss) sparas i användarens HKCU-register; timeout, okänt promptresultat och fel räknas inte som lästa.
+- Explicit kvittering (eller lyckad action/dismiss) sparas i datorns delade HKLM-register; timeout, okänt promptresultat och fel räknas inte som lästa.
 
 SQL Server är meddelandelager, inte presentationskanal eller aktuellt leveransrapporteringssystem.
 
@@ -76,8 +84,9 @@ SQL Server är meddelandelager, inte presentationskanal eller aktuellt leveransr
 
 ### Klient
 
-- Windows PowerShell 5.1 eller PowerShell 7
+- 64-bitars Windows och 64-bitars Windows PowerShell 5.1 eller PowerShell 7 (32-bitars klientprocesser avvisas för att undvika separata registervyer)
 - interaktiv användarsession (inte Session 0 / `SYSTEM`)
+- engångsprovisionering av HKLM-nyckeln som administratör enligt quick start; därefter körs klienten utan administratörsrättigheter
 - nätverksåtkomst till SQL Server på TCP 1433
 - en **lokalt paketerad och versionslåst** kopia av `PSAppDeployToolkit` / `AppDeployToolkit`
 
@@ -262,14 +271,20 @@ Klienten:
 - registrerar aldrig dator/grupptillhörighet i SQL; gamla `ClientGroups`-inställningar ignoreras
 - pollar den SELECT-baserade `dbo.usp_GetPendingToast` utan registrering, LastSeen-uppdatering, leases eller leveranskvittens
 - visar meddelandet via AppDeployToolkit
-- sparar `Read`, `ShowCount` och UTC-`NextShowUtc` som ett JSON-registervärde per meddelande under `HKCU:\Software\AppDeployToolkit-MessengerTool\ReadState\<scope-hash>`
-- scopet omfattar SQL-server/port, databas, datornamn och användar-SID. Tillståndet överlever omstarter; varje användare kvitterar separat. Borttagna registervärden eller en återskapad databas med återanvända meddelande-ID:n kan medföra att gamla meddelanden visas igen eller undertrycks; rensa scopet vid sådan databasåterställning
+- sparar `Read`, `ShowCount` och UTC-`NextShowUtc` som ett JSON-registervärde per meddelande under `HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\<scope-hash>` i 64-bitars registervyn
+- scopet omfattar SQL-server/port, databas och datornamn, **inte användar-SID**. Tillståndet delas av alla interaktiva användare på datorn och överlever användarbyten och omstarter. En användares kvittering undertrycker därför samma engångsmeddelande för övriga användare; repetitionernas räknare och nästa visning delas också. Borttagna registervärden eller en återskapad databas med återanvända meddelande-ID:n kan medföra att gamla meddelanden visas igen eller undertrycks; rensa scopet vid sådan databasåterställning
 - `RepeatCount` inkluderar första kvitteringen; nästa visning schemaläggs från senaste lyckade kvittering. Timeout/fel förbrukar ingen repetition och försöks igen vid nästa pollning
 - läser alla aktiva meddelanden för nuvarande grupptillhörighet, brådskande först, sedan MessageId. Lokalt kvitterade meddelanden kan inte blockera andra genom en TOP-20-gräns
 - kontrollerar medlemskap, avbrott och utgångstid igen före varje prompt. En redan öppen prompt stängs inte automatiskt vid serveravbrott/utgång
 - avbryter med fel om registerlagring misslyckas, även efter kvittering; tillstånd som inte kunde sparas kan visas igen vid nästa start. Renderings-/protokollfel varnas och lämnas olästa
 
-En mutex hindrar parallella klientinstanser för samma scope. Logon-tasken registreras för den aktuella användaren med interaktiv inloggning och utan administratörsrättigheter; distribuera per användare, inte som SYSTEM. Standardnamnet på tasken inkluderar användar-SID för att undvika kollisioner på delade datorer.
+En global mutex med explicit INTERACTIVE-behörighet serialiserar en pollnings-/visningsomgång per maskinscope över användarsessioner. Låset hålls medan prompten är öppen men släpps före pollningsvilan, även vid fel. En upptagen klient hoppar över omgången och försöker vid nästa pollning (`-Once` avslutas utan visning om låset är upptaget). En redan öppen prompt i en inaktiv session kan fördröja andra sessioner tills den stängs/timeout; samtidiga klienter garanteras inte rättvis fördelning av visningar. Klienter som startats före uppgraderingen ska stoppas först, även för att ta bort gamla mutexobjekt med tidigare behörigheter.
+
+Logon-tasken registreras fortfarande **per användare för interaktiv UI**, inte för separat lässtatus, med interaktiv inloggning och utan administratörsrättigheter; distribuera per användare, inte som SYSTEM. Standardnamnet på tasken inkluderar användar-SID enbart för att undvika taskkollisioner på delade datorer.
+
+### Migration från HKCU
+
+Stoppa äldre klientversioner och kör HKLM-provisioneringen ovan innan de nya klienterna startas. Befintlig per-användarstatus under HKCU migreras **inte automatiskt**, slås inte ihop och läses inte av klienten. Fortfarande aktiva meddelanden kan därför visas på nytt en gång per dator (med eventuella delade repetitioner). Gamla HKCU-värden kan tas bort separat efter verifierad utrullning. Använd inte gamla och nya klienter parallellt.
 
 ### AD-import (endast administration)
 
@@ -308,7 +323,7 @@ Skapa login separat enligt lokal SQL-policy. Ta bort gamla skrivroller, db_owner
 - `sql/004-local-time-reporting.sql`
 - `sql/005-read-only-clients.sql` **måste köras sist**, även vid uppgradering av redan installerade databaser. Den ersätter polling med SELECT, tar bort nya delivery-rader från köproceduren, spärrar gammal rapportering och installerar klientrollen. Kör inte 001–004 igen utan att avsluta med 005.
 
-Gamla `ToastDelivery`-rader, `LastSeenUtc` och delivery-vyer/funktioner behålls enbart som historik; de uppdateras inte av nya klienter och får inte användas som aktuell leverans-/läsrapport. `usp_RecordToastDelivery` ger nu ett uttryckligt migreringsfel. Befintlig SQL-deliveryhistorik importeras inte till HKCU; vid övergång visas fortfarande aktiva meddelanden på nytt per användare. Sätt utgångstid/IsCancelled på gamla meddelanden före klientutrullning om det inte önskas. Uppgradera SQL före klienten och stoppa äldre klientversioner.
+Gamla `ToastDelivery`-rader, `LastSeenUtc` och delivery-vyer/funktioner behålls enbart som historik; de uppdateras inte av nya klienter och får inte användas som aktuell leverans-/läsrapport. `usp_RecordToastDelivery` ger nu ett uttryckligt migreringsfel. Befintlig SQL-deliveryhistorik importeras inte till HKLM; vid övergång visas fortfarande aktiva meddelanden på nytt per dator. Sätt utgångstid/IsCancelled på gamla meddelanden före klientutrullning om det inte önskas. Uppgradera SQL före klienten och stoppa äldre klientversioner.
 
 De stegvisa skripten lägger inte längre till bildkolumnerna men tar inte heller bort dem från befintliga databaser; kör det konsoliderade skriptet (efter backup) för att ta bort dem. Kör det konsoliderade skriptet igen vid uppgradering; det lägger till de nullable kolumnerna `Subtitle` och `AcknowledgeButtonText` i befintliga databaser före procedurdefinitionerna. Vid stegvis installation/uppgradering lägger `sql/003-toast-button.sql` till kolumnerna innan de uppdaterade kö- och pollningsprocedurerna skapas. Den nya procedurparametern `@AcknowledgeButtonText` är valfri och ligger sist, så befintliga anrop fungerar oförändrat.
 

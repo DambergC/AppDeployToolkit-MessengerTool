@@ -819,19 +819,26 @@ function Get-ToastReadStatePath {
         [Parameter(Mandatory)][string]$Server,
         [Parameter(Mandatory)][int]$Port,
         [Parameter(Mandatory)][string]$Database,
-        [Parameter(Mandatory)][string]$ComputerName,
-        [Parameter(Mandatory)][string]$UserSid
+        [Parameter(Mandatory)][string]$ComputerName
     )
-    $scope = @($Server.ToLowerInvariant(), $Port, $Database.ToLowerInvariant(), $ComputerName.ToLowerInvariant(), $UserSid) | ConvertTo-Json -Compress
+    Assert-ToastRegistryArchitecture
+    $scope = @($Server.ToLowerInvariant(), $Port, $Database.ToLowerInvariant(), $ComputerName.ToLowerInvariant()) | ConvertTo-Json -Compress
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($scope))).Replace('-', '') }
     finally { $sha.Dispose() }
-    return "HKCU:\Software\AppDeployToolkit-MessengerTool\ReadState\$hash"
+    return "HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\$hash"
+}
+
+function Assert-ToastRegistryArchitecture {
+    if (-not [Environment]::Is64BitProcess) {
+        throw 'Machine read state requires 64-bit PowerShell; 32-bit registry redirection is not supported.'
+    }
 }
 
 function Get-ToastReadState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$StatePath, [Parameter(Mandatory)][long]$MessageId)
+    Assert-ToastRegistryArchitecture
     if (-not (Test-Path -LiteralPath $StatePath -ErrorAction Stop)) {
         return [pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }
     }
@@ -855,12 +862,63 @@ function Get-ToastReadState {
 function Set-ToastReadState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$StatePath, [Parameter(Mandatory)][long]$MessageId, [Parameter(Mandatory)]$State)
+    Assert-ToastRegistryArchitecture
     if (-not (Test-Path -LiteralPath $StatePath -ErrorAction Stop)) {
-        New-Item -Path $StatePath -Force -ErrorAction Stop | Out-Null
+        $root = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState'
+        if (-not (Test-Path -LiteralPath $root -ErrorAction Stop)) {
+            throw 'Machine read state is not provisioned. An administrator must run deploy/Initialize-ToastReadState.ps1.'
+        }
+        New-Item -Path $StatePath -ErrorAction Stop | Out-Null
     }
     $nextShow = if ($null -ne $State.NextShowUtc) { $State.NextShowUtc.ToUniversalTime().ToString('o', [cultureinfo]::InvariantCulture) } else { $null }
     $json = @{ Read = [bool]$State.Read; ShowCount = [int]$State.ShowCount; NextShowUtc = $nextShow } | ConvertTo-Json -Compress
     New-ItemProperty -LiteralPath $StatePath -Name ([string]$MessageId) -Value $json -PropertyType String -Force -ErrorAction Stop | Out-Null
+}
+
+function New-ToastClientMutex {
+    param([Parameter(Mandatory)][string]$Name)
+    $mutexType = [System.Threading.Mutex]
+    if ($PSVersionTable.PSEdition -ne 'Desktop') {
+        Add-Type -AssemblyName System.Threading.AccessControl -ErrorAction Stop
+        $mutexType = [System.Threading.MutexAcl]
+    }
+    $rights = [System.Security.AccessControl.MutexRights]::Synchronize -bor [System.Security.AccessControl.MutexRights]::Modify
+    try { return $mutexType::OpenExisting($Name, $rights) }
+    catch [System.Threading.WaitHandleCannotBeOpenedException] { }
+    $security = [System.Security.AccessControl.MutexSecurity]::new()
+    $interactive = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-4')
+    $security.AddAccessRule([System.Security.AccessControl.MutexAccessRule]::new($interactive, $rights, [System.Security.AccessControl.AccessControlType]::Allow))
+    $created = $false
+    try {
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            return [System.Threading.Mutex]::new($false, $Name, [ref]$created, $security)
+        }
+        return [System.Threading.MutexAcl]::Create($false, $Name, [ref]$created, $security)
+    } catch [System.UnauthorizedAccessException] {
+        # Another session may have created it after OpenExisting; request only the granted rights.
+        return $mutexType::OpenExisting($Name, $rights)
+    }
+}
+
+function Invoke-ToastClientPass {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ConnectionString,
+        [AllowNull()][System.Data.SqlClient.SqlCredential]$SqlCredential,
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][string]$StatePath,
+        [int]$CommandTimeoutSeconds = 15
+    )
+    $mutex = New-ToastClientMutex -Name ('Global\ToastSql-' + ($StatePath -split '\\')[-1])
+    $ownsMutex = $false
+    try {
+        try { $ownsMutex = $mutex.WaitOne(0) }
+        catch [System.Threading.AbandonedMutexException] { $ownsMutex = $true }
+        if ($ownsMutex) { Invoke-ToastClientPoll @PSBoundParameters }
+    } finally {
+        if ($ownsMutex) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
 }
 
 function Invoke-ToastClientPoll {
@@ -1227,4 +1285,4 @@ function Invoke-ToastSql {
     }
 }
 
-Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastButtonSettings,Resolve-ToastAcknowledgeButtonText,Resolve-ToastScenario,Resolve-ToastDisplayMode,Invoke-ToastNotification,Set-ToastClientDependencyOptions,Get-ToastReadStatePath,Get-ToastReadState,Set-ToastReadState,Invoke-ToastClientPoll
+Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastButtonSettings,Resolve-ToastAcknowledgeButtonText,Resolve-ToastScenario,Resolve-ToastDisplayMode,Invoke-ToastNotification,Set-ToastClientDependencyOptions,Get-ToastReadStatePath,Get-ToastReadState,Set-ToastReadState,Invoke-ToastClientPass,Invoke-ToastClientPoll

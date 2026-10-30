@@ -1295,11 +1295,12 @@ function Show-InstallationPrompt {
     }
 
     Context 'registry read state' {
-        It 'isolates server database computer port and user scopes and normalizes name case' {
-            $scope = @{ Server = 'sql01'; Port = 1433; Database = 'Toast'; ComputerName = 'PC01'; UserSid = 'S-1-5-21-1' }
+        It 'isolates server database computer and port scopes without a user SID and normalizes name case' {
+            $scope = @{ Server = 'sql01'; Port = 1433; Database = 'Toast'; ComputerName = 'PC01' }
             $path = Get-ToastReadStatePath @scope
-            $path | Should -Match '^HKCU:\\Software\\AppDeployToolkit-MessengerTool\\ReadState\\[A-F0-9]{64}$'
-            foreach ($key in @('Server','Database','ComputerName','UserSid','Port')) {
+            $path | Should -Match '^HKLM:\\Software\\AppDeployToolkit-MessengerTool\\ReadState\\[A-F0-9]{64}$'
+            (Get-Command Get-ToastReadStatePath).Parameters.Keys | Should -Not -Contain 'UserSid'
+            foreach ($key in @('Server','Database','ComputerName','Port')) {
                 $changed = $scope.Clone()
                 $changed[$key] = if ($key -eq 'Port') { 1434 } else { $scope[$key] + 'other' }
                 Get-ToastReadStatePath @changed | Should -Not -Be $path
@@ -1315,12 +1316,12 @@ function Show-InstallationPrompt {
                 Mock New-ItemProperty { $script:registryValue = $Value }
                 Mock Get-ItemProperty { [pscustomobject]@{ '42' = $script:registryValue } }
                 $next = [datetime]::UtcNow.AddMinutes(5)
-                Set-ToastReadState -StatePath 'HKCU:\Test' -MessageId 42 -State ([pscustomobject]@{ Read = $true; ShowCount = 2; NextShowUtc = $next })
-                $state = Get-ToastReadState -StatePath 'HKCU:\Test' -MessageId 42
+                Set-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42 -State ([pscustomobject]@{ Read = $true; ShowCount = 2; NextShowUtc = $next })
+                $state = Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42
                 $state.Read | Should -BeTrue
                 $state.ShowCount | Should -Be 2
                 $state.NextShowUtc.ToString('o') | Should -Be $next.ToString('o')
-                (Get-ToastReadState -StatePath 'HKCU:\Test' -MessageId 42).ShowCount | Should -Be 2
+                (Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42).ShowCount | Should -Be 2
                 Should -Invoke New-ItemProperty -Times 1 -ParameterFilter { $Name -eq '42' -and $PropertyType -eq 'String' -and $ErrorAction -eq 'Stop' }
             }
         }
@@ -1328,13 +1329,108 @@ function Show-InstallationPrompt {
         It 'defaults missing state and rejects corrupt or inaccessible state' {
             InModuleScope ToastSql {
                 Mock Test-Path { $false }
-                (Get-ToastReadState -StatePath 'HKCU:\Test' -MessageId 42).ShowCount | Should -Be 0
+                (Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42).ShowCount | Should -Be 0
                 Mock Test-Path { $true }
                 Mock Get-ItemProperty { [pscustomobject]@{ '42' = '{"Read":true,"ShowCount":-1,"NextShowUtc":null}' } }
-                { Get-ToastReadState -StatePath 'HKCU:\Test' -MessageId 42 } | Should -Throw '*Invalid local read state*'
+                { Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42 } | Should -Throw '*Invalid local read state*'
                 Mock Get-ItemProperty { throw 'Access denied' }
-                { Get-ToastReadState -StatePath 'HKCU:\Test' -MessageId 42 } | Should -Throw '*Access denied*'
+                { Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42 } | Should -Throw '*Access denied*'
             }
+        }
+
+        It 'requires administrator provisioning instead of creating the machine root or falling back' {
+            InModuleScope ToastSql {
+                Mock Test-Path { $false }
+                Mock New-Item {}
+                { Set-ToastReadState -StatePath 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' -MessageId 42 -State ([pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }) } |
+                    Should -Throw '*administrator must run deploy/Initialize-ToastReadState.ps1*'
+                Should -Invoke New-Item -Times 0
+            }
+        }
+
+        It 'creates only the scope below a provisioned root and propagates denied writes' {
+            InModuleScope ToastSql {
+                Mock Test-Path { $LiteralPath -eq 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState' }
+                Mock New-Item {}
+                Mock New-ItemProperty { throw 'Access denied' }
+                $path = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope'
+                { Set-ToastReadState -StatePath $path -MessageId 42 -State ([pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }) } |
+                    Should -Throw '*Access denied*'
+                Should -Invoke New-Item -Times 1 -ParameterFilter { $Path -eq 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' -and -not $Force }
+                Should -Invoke New-ItemProperty -Times 1 -ParameterFilter { $LiteralPath -eq 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' }
+            }
+        }
+
+        It 'limits provisioning to the 64-bit machine read-state subtree and interactive data rights' {
+            $text = Get-Content "$PSScriptRoot/../deploy/Initialize-ToastReadState.ps1" -Raw
+            $text | Should -Match '#Requires -RunAsAdministrator'
+            $text | Should -Match 'Is64BitProcess'
+            $text | Should -Match ([regex]::Escape("`$path = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState'"))
+            $text | Should -Match "SecurityIdentifier\]::new\('S-1-5-4'\)"
+            $text | Should -Match 'RegistryRights\]::ReadKey'
+            $text | Should -Match 'RegistryRights\]::SetValue'
+            $text | Should -Match 'RegistryRights\]::CreateSubKey'
+            $text | Should -Match 'InheritanceFlags\]::ContainerInherit'
+            $text | Should -Match 'Set-Acl -LiteralPath \$path'
+            $text | Should -Not -Match 'FullControl|ChangePermissions|TakeOwnership|HKCU:'
+            $module = Get-Content "$PSScriptRoot/../src/Module/ToastSql.psm1" -Raw
+            $module | Should -Match 'function Assert-ToastRegistryArchitecture'
+            $module | Should -Match 'if \(-not \[Environment\]::Is64BitProcess\)'
+            $module | Should -Not -Match 'HKCU:|UserSid'
+        }
+    }
+
+    Context 'machine-wide polling concurrency' {
+        BeforeEach {
+            InModuleScope ToastSql {
+                $script:lockAvailable = $true
+                $script:releaseCount = 0
+                $script:disposeCount = 0
+                $script:passArgs = @{ ConnectionString = 'test'; ComputerName = 'PC01'; StatePath = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' }
+                Mock New-ToastClientMutex {
+                    $lock = [pscustomobject]@{}
+                    $lock | Add-Member ScriptMethod WaitOne { param($timeout) return $script:lockAvailable }
+                    $lock | Add-Member ScriptMethod ReleaseMutex { $script:releaseCount++ }
+                    $lock | Add-Member ScriptMethod Dispose { $script:disposeCount++ }
+                    return $lock
+                }
+                Mock Invoke-ToastClientPoll {}
+            }
+        }
+
+        It 'skips a busy scope but allows a later session pass and releases before sleep' {
+            InModuleScope ToastSql {
+                $script:lockAvailable = $false
+                Invoke-ToastClientPass @script:passArgs
+                Should -Invoke Invoke-ToastClientPoll -Times 0
+                $script:releaseCount | Should -Be 0
+                $script:lockAvailable = $true
+                Invoke-ToastClientPass @script:passArgs
+                Should -Invoke Invoke-ToastClientPoll -Times 1
+                Should -Invoke New-ToastClientMutex -Times 2 -ParameterFilter { $Name -eq 'Global\ToastSql-scope' }
+                $script:releaseCount | Should -Be 1
+                $script:disposeCount | Should -Be 2
+            }
+        }
+
+        It 'releases the machine lock when polling fails' {
+            InModuleScope ToastSql {
+                Mock Invoke-ToastClientPoll { throw 'Persistence failed' }
+                { Invoke-ToastClientPass @script:passArgs } | Should -Throw '*Persistence failed*'
+                $script:releaseCount | Should -Be 1
+                $script:disposeCount | Should -Be 1
+            }
+        }
+
+        It 'grants cross-user synchronize and release rights with framework-specific built-in APIs' {
+            $text = Get-Content "$PSScriptRoot/../src/Module/ToastSql.psm1" -Raw
+            $text | Should -Match 'MutexRights\]::Synchronize'
+            $text | Should -Match 'MutexRights\]::Modify'
+            $text | Should -Match "SecurityIdentifier\]::new\('S-1-5-4'\)"
+            $text | Should -Match 'MutexAccessRule'
+            $text | Should -Match 'System.Threading.MutexAcl\]::Create'
+            $text | Should -Match '\$mutexType::OpenExisting\(\$Name, \$rights\)'
+            $text | Should -Match 'catch \[System.UnauthorizedAccessException\]'
         }
     }
 
@@ -1343,7 +1439,7 @@ function Show-InstallationPrompt {
             InModuleScope ToastSql {
                 $script:pollRows = @([pscustomobject]@{ MessageId = 42; RepeatCount = $null; RepeatIntervalSeconds = $null })
                 $script:localStates = @{}
-                $script:pollArgs = @{ ConnectionString = 'test'; ComputerName = 'PC01'; StatePath = 'HKCU:\Test' }
+                $script:pollArgs = @{ ConnectionString = 'test'; ComputerName = 'PC01'; StatePath = 'HKLM:\Test' }
                 Mock Invoke-ToastSql {
                     if ($null -eq $Parameters.MessageId) { return $script:pollRows }
                     return $script:pollRows | Where-Object MessageId -eq $Parameters.MessageId
@@ -1574,8 +1670,8 @@ function Show-InstallationPrompt {
             $text = Get-Content "$PSScriptRoot/../src/Client/Start-ToastClient.ps1" -Raw
             $text | Should -Not -Match '\$Register|ClientGroups|usp_RecordToastDelivery|NonQuery|LeaseId|LastSeen'
             $text | Should -Match 'WindowsIdentity'
-            $text | Should -Match 'Mutex'
-            $text | Should -Match 'Invoke-ToastClientPoll'
+            $text | Should -Match 'Invoke-ToastClientPass'
+            $text | Should -Not -Match 'UserSid|HKCU:|RunAsAdministrator|Verb RunAs'
             $task = Get-Content "$PSScriptRoot/../deploy/Register-ToastClientTask.ps1" -Raw
             $task | Should -Match '\$identity.User.Value'
             $task | Should -Match '-LogonType Interactive -RunLevel Limited'
