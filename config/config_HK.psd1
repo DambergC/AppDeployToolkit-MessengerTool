@@ -9,7 +9,7 @@
     # SQL Server instance or hostname that the client/server scripts will connect to.
     SqlServer = 'cm01.corp.hogwart.org'
 
-    # Database name used by the project for queue, status, and delivery tracking.
+    # Database for messages and administrator-managed membership; no client delivery reporting.
     SqlDatabase = 'ToastNotifications'
 
     # TCP port for SQL Server access.
@@ -23,11 +23,10 @@
     SqlCredential = $null
 
     # Leave as $null to auto-detect the local computer name in the client script.
-    # Set a specific value only when a fixed client name is required for registration/reporting.
+    # Must match the administrator-imported AD computer Name.
     ClientName = $null
 
-    # One or more group names a client should register for and listen to.
-    ClientGroups = @('HK')
+    # Group membership is managed on the server with Import-ToastADComputers.ps1.
 
     # Local path to a packaged PSAppDeployToolkit copy used by this client.
     # Set this to a version-pinned module manifest, module file, or containing folder

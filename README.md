@@ -2,7 +2,7 @@
 
 Gruppbaserade SQL-köade notifieringar för Windows-klienter med **AppDeployToolkit** som enda stödda presentationslager.
 
-Projektet behåller SQL-kö, klientregistrering, polling, leasing, repeat-logik och leveranskvittens, men klienten visar nu meddelanden enbart via `Show-ADTInstallationPrompt` / `Show-InstallationPrompt`.
+SQL lagrar meddelanden och administratörshanterad grupptillhörighet. Klienterna har enbart läsåtkomst och visar meddelanden via `Show-ADTInstallationPrompt` / `Show-InstallationPrompt`. Lässtatus och repeat-schema sparas per användare i Windows-registret, inte i databasen.
 
 ## Quick start
 
@@ -20,15 +20,16 @@ Projektet behåller SQL-kö, klientregistrering, polling, leasing, repeat-logik 
 Copy-Item .\config\config.example.psd1 .\config\config.psd1
 ```
 
-3. Fyll i SQL-inställningar, klientnamn/grupper och `AppDeployToolkitModulePath`.
+3. Fyll i SQL-inställningar, klientnamn och `AppDeployToolkitModulePath`. Använd separata SQL-identiteter för administration och klienter (se behörigheter nedan).
 
-4. Registrera klienten:
+4. Importera datorer från AD på administrationsdatorn (RSAT-modulen `ActiveDirectory` krävs):
 
 ```powershell
-.\src\Client\Start-ToastClient.ps1 -ConfigPath .\config\config.psd1 -Register
+.\src\Server\Import-ToastADComputers.ps1 -ConfigPath .\config\admin.psd1 `
+  -Tag 'IT-TEST' -SearchBase 'OU=Workstations,DC=example,DC=test' -Filter 'Enabled -eq $true'
 ```
 
-> `-Register` registrerar klienten och fortsätter sedan polling-loopen. Använd `-Once` för att registrera och avsluta direkt efter en enda körning.
+> `Tag` är SQL-notifieringsgruppens namn, inte ett AD-attribut. Klienten registrerar sig aldrig själv; `-Register` har tagits bort.
 
 5. Köa ett testmeddelande:
 
@@ -60,9 +61,9 @@ Copy-Item .\config\config.example.psd1 .\config\config.psd1
 - Administratören köar ett meddelande till en grupp i SQL Server.
 - Klienterna pollar SQL Server över TCP 1433.
 - Klientscriptet körs i användarens interaktiva session och visar meddelandet via AppDeployToolkit.
-- Leveransstatus sparas i SQL Server via lease-/acknowledgement-flödet.
+- Explicit kvittering (eller lyckad action/dismiss) sparas i användarens HKCU-register; timeout, okänt promptresultat och fel räknas inte som lästa.
 
-SQL Server är alltså kö- och statuslager, inte presentationskanal.
+SQL Server är meddelandelager, inte presentationskanal eller aktuellt leveransrapporteringssystem.
 
 ## Förutsättningar
 
@@ -94,7 +95,6 @@ Exempel:
     UseIntegratedSecurity = $true
     SqlCredential = $null
     ClientName = $null
-    ClientGroups = @('IT-TEST')
     AppDeployToolkitModulePath = 'C:\ToastSql\Dependencies\PSAppDeployToolkit\4.1.8'
     Encrypt = $true
     TrustServerCertificate = $false
@@ -204,12 +204,12 @@ Fler exempel:
 
 Beteende:
 
-- `Show-ADTInstallationPrompt` (4.1.8) returnerar texten på den klickade knappen (eller `Timeout`); klick på vänsterknappens text tolkas som action, allt annat som kvittering
+- `Show-ADTInstallationPrompt` (4.1.8) returnerar texten på den klickade knappen (eller `Timeout`); kända knappresultat tolkas som action eller kvittering. `Timeout`, tomt och okänt resultat lämnar meddelandet oläst
 - om användaren klickar action-knappen och det är en `Protocol`-knapp valideras URI:n igen och öppnas i användarens standardwebbläsare/standardprogram för schemat — Edge hårdkodas inte:
   - körs klienten redan i den inloggade användarens interaktiva session (inte SYSTEM, inte session 0) öppnas URL:en med `Start-Process -FilePath <url>`
   - körs klienten som SYSTEM eller utanför användarsessionen startas den i den inloggade användarens kontext via PSAppDeployToolkits `Start-ADTProcessAsUser -FilePath explorer.exe -ArgumentList <url> -NoWait` (parametrar som stöds av den medföljande 4.1.8-versionen)
-  - saknas `Start-ADTProcessAsUser` i det läget loggas ett fel och leveransen markeras som `Failed`
-- om användaren klickar acknowledge-knappen registreras leveransen utan att någon URI öppnas
+  - saknas `Start-ADTProcessAsUser` i det läget loggas ett fel och meddelandet lämnas oläst (klientskriptet ska alltid köras interaktivt)
+- om användaren klickar acknowledge-knappen sparas lässtatus lokalt utan att någon URI öppnas
 - om protokollstart misslyckas returneras felet tydligt och meddelandet markeras inte som tyst kvitterat
 
 Begränsningar:
@@ -254,16 +254,39 @@ Bildkolumnerna (`AppLogoPath`, `HeroImagePath`, `AppLogoBytes`, `AppLogoContentT
 Syntax:
 
 ```powershell
-.\src\Client\Start-ToastClient.ps1 -ConfigPath <string> [-Register] [-Once] [-PollSeconds <int>]
+.\src\Client\Start-ToastClient.ps1 -ConfigPath <string> [-Once] [-PollSeconds <int>]
 ```
 
 Klienten:
 
-- registrerar dator/grupptillhörighet i SQL när `-Register` används
-- pollar `dbo.usp_GetPendingToast`
+- registrerar aldrig dator/grupptillhörighet i SQL; gamla `ClientGroups`-inställningar ignoreras
+- pollar den SELECT-baserade `dbo.usp_GetPendingToast` utan registrering, LastSeen-uppdatering, leases eller leveranskvittens
 - visar meddelandet via AppDeployToolkit
-- kvitterar leverans via `dbo.usp_RecordToastDelivery`
-- retry:ar leveranskvittens för tillfälliga transport-/timeoutfel
+- sparar `Read`, `ShowCount` och UTC-`NextShowUtc` som ett JSON-registervärde per meddelande under `HKCU:\Software\AppDeployToolkit-MessengerTool\ReadState\<scope-hash>`
+- scopet omfattar SQL-server/port, databas, datornamn och användar-SID. Tillståndet överlever omstarter; varje användare kvitterar separat. Borttagna registervärden eller en återskapad databas med återanvända meddelande-ID:n kan medföra att gamla meddelanden visas igen eller undertrycks; rensa scopet vid sådan databasåterställning
+- `RepeatCount` inkluderar första kvitteringen; nästa visning schemaläggs från senaste lyckade kvittering. Timeout/fel förbrukar ingen repetition och försöks igen vid nästa pollning
+- läser alla aktiva meddelanden för nuvarande grupptillhörighet, brådskande först, sedan MessageId. Lokalt kvitterade meddelanden kan inte blockera andra genom en TOP-20-gräns
+- kontrollerar medlemskap, avbrott och utgångstid igen före varje prompt. En redan öppen prompt stängs inte automatiskt vid serveravbrott/utgång
+- avbryter med fel om registerlagring misslyckas, även efter kvittering; tillstånd som inte kunde sparas kan visas igen vid nästa start. Renderings-/protokollfel varnas och lämnas olästa
+
+En mutex hindrar parallella klientinstanser för samma scope. Logon-tasken registreras för den aktuella användaren med interaktiv inloggning och utan administratörsrättigheter; distribuera per användare, inte som SYSTEM. Standardnamnet på tasken inkluderar användar-SID för att undvika kollisioner på delade datorer.
+
+### AD-import (endast administration)
+
+`src/Server/Import-ToastADComputers.ps1 -ConfigPath <admin.psd1> -Tag <gruppnamn> [-Filter <AD-filter>] [-SearchBase <OU-DN>] [-WhatIf] [-Confirm]`
+
+`Filter` använder `Get-ADComputer -Filter`-syntax (default `*`); utan SearchBase används AD:s standardsökbas. Förhandsgranska alltid urval med `-WhatIf`. Datorns `Name` (inte DNSHostName) lagras och ska matcha klientens `ClientName` (default datornamnet). Tag trimmas och valideras till 1–128 tecken, datornamn till 1–256. Parametriserade, transaktionella och idempotenta INSERT lägger till saknad grupp, dator och medlemskap utan dubbletter. Befintliga medlemskap tas inte bort och inaktiva datorer/grupper återaktiveras inte. Importen ändrar inga AD-objekt. Nyimporterade datorer får gruppens fortfarande aktiva, ej utgångna meddelanden även om de köades före importen.
+
+### SQL-behörigheter
+
+Installationen skapar `ToastClientReader` med EXECUTE endast på den läsande pollningsproceduren, nekar INSERT/UPDATE/DELETE samt EXECUTE på kö- och gamla rapporteringsprocedurer. Tilldela klientanvändare (eller en Windows-användargrupp) endast denna roll:
+
+```sql
+CREATE USER [EXAMPLE\ToastUsers] FOR LOGIN [EXAMPLE\ToastUsers];
+ALTER ROLE ToastClientReader ADD MEMBER [EXAMPLE\ToastUsers];
+```
+
+Skapa login separat enligt lokal SQL-policy. Ta bort gamla skrivroller, db_owner, db_datawriter, breda EXECUTE/CONTROL-grants och motsvarande rättigheter via andra grupper/public; rollen återkallar inte redan existerande behörigheter. Ge aldrig klienter administratörskonfigurationen. AD-importens separata adminidentitet behöver SELECT/INSERT på ToastGroup, ToastClient och ToastClientGroup; avsändaren behöver EXECUTE på usp_QueueToastMessage. Inga nya klienter behöver SELECT direkt på tabeller. Datornamnet är ett urval, inte en autentiseringsgräns mellan klienter; en klientidentitet kan begära en annan registrerad dators meddelanden.
 
 ## SQL-skript
 
@@ -271,7 +294,7 @@ Klienten:
 
 - `sql/Install-BurntToast-SQLserver.sql`
   - skapar saknade bastabeller/index
-  - applicerar repeat-/lease-logik
+  - behåller historiska delivery-tabeller men använder lokal repeat-/lässtatus
   - applicerar knapp-/display-mode-stöd
   - applicerar lokal tidsrapportering
   - normaliserar `DisplayMode` till `AppDeployToolkit` för `NULL`-värden och rader som fortfarande saknar leveranshistorik vid uppgradering
@@ -283,6 +306,9 @@ Klienten:
 - `sql/002-toast-design-repeat.sql`
 - `sql/003-toast-button.sql`
 - `sql/004-local-time-reporting.sql`
+- `sql/005-read-only-clients.sql` **måste köras sist**, även vid uppgradering av redan installerade databaser. Den ersätter polling med SELECT, tar bort nya delivery-rader från köproceduren, spärrar gammal rapportering och installerar klientrollen. Kör inte 001–004 igen utan att avsluta med 005.
+
+Gamla `ToastDelivery`-rader, `LastSeenUtc` och delivery-vyer/funktioner behålls enbart som historik; de uppdateras inte av nya klienter och får inte användas som aktuell leverans-/läsrapport. `usp_RecordToastDelivery` ger nu ett uttryckligt migreringsfel. Befintlig SQL-deliveryhistorik importeras inte till HKCU; vid övergång visas fortfarande aktiva meddelanden på nytt per användare. Sätt utgångstid/IsCancelled på gamla meddelanden före klientutrullning om det inte önskas. Uppgradera SQL före klienten och stoppa äldre klientversioner.
 
 De stegvisa skripten lägger inte längre till bildkolumnerna men tar inte heller bort dem från befintliga databaser; kör det konsoliderade skriptet (efter backup) för att ta bort dem. Kör det konsoliderade skriptet igen vid uppgradering; det lägger till de nullable kolumnerna `Subtitle` och `AcknowledgeButtonText` i befintliga databaser före procedurdefinitionerna. Vid stegvis installation/uppgradering lägger `sql/003-toast-button.sql` till kolumnerna innan de uppdaterade kö- och pollningsprocedurerna skapas. Den nya procedurparametern `@AcknowledgeButtonText` är valfri och ligger sist, så befintliga anrop fungerar oförändrat.
 
@@ -319,4 +345,4 @@ Fokus i testsviten ligger nu på:
 - separat Subtitle-rendering och body-baserad fallback för ADT-varianter som kräver den
 - protokollknappar och URI-validering
 - konfigurerbar text på acknowledge-knappen och separat vänster protokollknapp
-- SQL-kontrakt, leasing och leveransflödeskompatibilitet
+- läsande SQL-kontrakt, lokal registerstatus, repeat, timeout/fel och AD-import

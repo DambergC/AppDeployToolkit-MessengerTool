@@ -2,7 +2,8 @@
    BurntToast-SQLserver — Consolidated install/upgrade script
    Safe for both new installations and upgrades.
    Creates missing base tables/indexes and then applies the
-   repeat, button/display-mode, and local-time reporting updates.
+   repeat, button/display-mode, local-time reporting, and read-only
+   client updates (including the ToastClientReader role).
    WARNING: upgrades permanently drop the obsolete image columns
    (AppLogoPath, HeroImagePath, AppLogoBytes, AppLogoContentType,
    HeroImageBytes, HeroImageContentType). Back up the database first.
@@ -709,11 +710,6 @@ BEGIN
 
     DECLARE @MessageId bigint = SCOPE_IDENTITY();
 
-    INSERT dbo.ToastDelivery(MessageId, ClientId)
-        SELECT @MessageId, ClientId
-        FROM dbo.ToastClientGroup
-        WHERE GroupId = @GroupId;
-
     COMMIT;
 
     SELECT @MessageId AS MessageId;
@@ -721,62 +717,24 @@ END;
 GO
 
 CREATE OR ALTER PROCEDURE dbo.usp_GetPendingToast
-    @ComputerName nvarchar(256)
+    @ComputerName nvarchar(256),
+    @MessageId bigint = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
-    SET XACT_ABORT ON;
-
-    DECLARE @ClientId int = (SELECT ClientId FROM dbo.ToastClient WHERE ComputerName = @ComputerName AND IsActive = 1);
-    IF @ClientId IS NULL RETURN;
-
-    DECLARE @Now datetime2(0) = SYSDATETIME();
-    DECLARE @LeaseSeconds int = 120;
-
-    UPDATE dbo.ToastClient
-    SET LastSeenUtc = @Now
-    WHERE ClientId = @ClientId;
-
-    ;WITH DueMessages AS (
-        SELECT TOP (20) d.ClientId, d.MessageId
-        FROM dbo.ToastDelivery d WITH (UPDLOCK, READPAST, ROWLOCK)
-        INNER JOIN dbo.ToastMessage m ON m.MessageId = d.MessageId
-        WHERE d.ClientId = @ClientId
-          AND m.IsCancelled = 0
-          AND (m.ExpiresUtc IS NULL OR m.ExpiresUtc > @Now)
-          AND d.NextShowUtc <= @Now
-          AND (
-                d.Status = 'Pending'
-                OR (d.Status = 'InProgress' AND d.LeaseExpiresUtc IS NOT NULL AND d.LeaseExpiresUtc <= @Now)
-              )
-        ORDER BY d.MessageId
-    )
-    UPDATE d
-    SET Status = 'InProgress',
-        LeaseId = NEWID(),
-        LeaseExpiresUtc = DATEADD(second, @LeaseSeconds, @Now),
-        ErrorMessage = NULL
-    OUTPUT inserted.MessageId,
-           inserted.LeaseId,
-           m.Title,
-           m.Subtitle,
-           m.Body,
-           m.Sound,
-           m.IsUrgent,
-           m.ButtonText,
-           m.ButtonArguments,
-           m.ButtonActivationType,
-           m.AcknowledgeButtonText,
-           m.Scenario,
-           CAST('AppDeployToolkit' AS varchar(20)) AS DisplayMode,
-           m.RepeatIntervalSeconds,
-           m.RepeatCount,
-           m.ExpiresUtc,
-           inserted.ShowCount
-    FROM dbo.ToastDelivery d
-    INNER JOIN DueMessages x ON x.ClientId = d.ClientId AND x.MessageId = d.MessageId
-    INNER JOIN dbo.ToastMessage m ON m.MessageId = d.MessageId
-    WHERE d.ClientId = @ClientId;
+    SELECT m.MessageId, m.Title, m.Subtitle, m.Body, m.Sound, m.IsUrgent,
+           m.ButtonText, m.ButtonArguments, m.ButtonActivationType, m.AcknowledgeButtonText,
+           m.Scenario, CAST('AppDeployToolkit' AS varchar(20)) AS DisplayMode,
+           m.RepeatIntervalSeconds, m.RepeatCount, m.ExpiresUtc
+    FROM dbo.ToastMessage m
+    INNER JOIN dbo.ToastGroup g ON g.GroupId = m.GroupId AND g.IsActive = 1
+    INNER JOIN dbo.ToastClientGroup cg ON cg.GroupId = m.GroupId
+    INNER JOIN dbo.ToastClient c ON c.ClientId = cg.ClientId
+    WHERE c.ComputerName = @ComputerName AND c.IsActive = 1
+      AND m.IsCancelled = 0
+      AND (m.ExpiresUtc IS NULL OR m.ExpiresUtc > SYSDATETIME())
+      AND (@MessageId IS NULL OR m.MessageId = @MessageId)
+    ORDER BY m.IsUrgent DESC, m.MessageId;
 END;
 GO
 
@@ -900,3 +858,25 @@ EXEC sp_executesql @Sql1;
 EXEC sp_executesql @Sql2;
 EXEC sp_executesql @Sql3;
 EXEC sp_executesql @Sql4;
+
+GO
+/* ===== Read-only clients (sql/005-read-only-clients.sql) ===== */
+-- Keep historical rows and reporting views; stop accepting new delivery reports.
+CREATE OR ALTER PROCEDURE dbo.usp_RecordToastDelivery
+    @ComputerName nvarchar(256),
+    @MessageId bigint,
+    @Status varchar(20),
+    @ErrorMessage nvarchar(2000) = NULL,
+    @LeaseId uniqueidentifier = NULL
+AS
+BEGIN
+    THROW 50040, 'Database delivery reporting is retired. Upgrade the client to local registry read tracking.', 1;
+END;
+GO
+IF DATABASE_PRINCIPAL_ID('ToastClientReader') IS NULL
+    CREATE ROLE ToastClientReader AUTHORIZATION dbo;
+GRANT EXECUTE ON OBJECT::dbo.usp_GetPendingToast TO ToastClientReader;
+DENY INSERT, UPDATE, DELETE TO ToastClientReader;
+DENY EXECUTE ON OBJECT::dbo.usp_QueueToastMessage TO ToastClientReader;
+DENY EXECUTE ON OBJECT::dbo.usp_RecordToastDelivery TO ToastClientReader;
+GO
