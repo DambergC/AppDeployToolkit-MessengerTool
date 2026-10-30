@@ -14,17 +14,23 @@ SQL lagrar meddelanden och administratörshanterad grupptillhörighet. Klientern
 :r sql/Install-BurntToast-SQLserver.sql
 ```
 
-2. Kopiera konfigurationen:
+2. Kopiera klientkonfigurationen. På administrationsdatorn skapar du även en separat administratörskonfiguration (distribuera den inte till klienterna):
 
 ```powershell
 Copy-Item .\config\config.example.psd1 .\config\config.psd1
+# Endast på administrationsdatorn:
+Copy-Item .\config\config.example.psd1 .\config\admin.psd1
 ```
 
-3. Fyll i SQL-inställningar, klientnamn och `AppDeployToolkitModulePath`. Använd separata SQL-identiteter för administration och klienter (se behörigheter nedan).
+3. Fyll i SQL-inställningar i båda filerna, samt klientnamn och `AppDeployToolkitModulePath` i klientfilen. Konfigurationerna ska peka på samma databas. Använd separata SQL-identiteter för administration och klienter och tilldela klientidentiteten rollen `ToastClientReader` enligt avsnittet **SQL-behörigheter** innan klienten startas. Med integrerad säkerhet används identiteten som kör respektive skript; filnamnet `admin.psd1` ger i sig inga extra rättigheter.
 
 4. Importera datorer från AD på administrationsdatorn (RSAT-modulen `ActiveDirectory` krävs):
 
 ```powershell
+.\src\Server\Import-ToastADComputers.ps1 -ConfigPath .\config\admin.psd1 `
+  -Tag 'IT-TEST' -SearchBase 'OU=Workstations,DC=example,DC=test' -Filter 'Enabled -eq $true' -WhatIf
+
+# Kör utan -WhatIf när urvalet har kontrollerats:
 .\src\Server\Import-ToastADComputers.ps1 -ConfigPath .\config\admin.psd1 `
   -Tag 'IT-TEST' -SearchBase 'OU=Workstations,DC=example,DC=test' -Filter 'Enabled -eq $true'
 ```
@@ -35,7 +41,7 @@ Copy-Item .\config\config.example.psd1 .\config\config.psd1
 
 ```powershell
 .\src\Server\Send-ToastMessage.ps1 `
-  -ConfigPath .\config\config.psd1 `
+  -ConfigPath .\config\admin.psd1 `
   -GroupName 'IT-TEST' `
   -Title 'Testmeddelande' `
   -Subtitle 'Valfri underrubrik' `
@@ -63,6 +69,45 @@ Skriptet ger gruppen INTERACTIVE (SID `S-1-5-4`, oberoende av Windows-språk) l�
 ```
 
 `deploy/Register-ToastClientTask.ps1` registrerar ett logon-task som startar PowerShell med `-STA`. ADT-prompten kräver inte längre WPF-koden som tidigare fanns i repot, men `-STA` är fortfarande ett bra standardval för interaktiva klientstarter.
+
+### Automatisk start vid inloggning
+
+Efter ett lyckat engångstest, kör följande i den avsedda användarens **icke-eleverade 64-bitars PowerShell** från den installerade projektkatalogen:
+
+```powershell
+$scriptPath = (Resolve-Path .\src\Client\Start-ToastClient.ps1).Path
+$configPath = (Resolve-Path .\config\config.psd1).Path
+.\deploy\Register-ToastClientTask.ps1 -ScriptPath $scriptPath -ConfigPath $configPath
+```
+
+Använd beständiga lokala sökvägar, inte en temporär utrullningskatalog. Upprepa taskregistreringen för varje användare som ska kunna visa meddelanden; HKLM-provisioneringen görs däremot bara en gång per dator. Tasken startar vid nästa inloggning. Stoppa eventuell manuellt startad polling före test av tasken.
+
+### Kontrollera att lässtatus delas per dator
+
+1. Köa ett nytt testmeddelande utan repeat-parametrar med administratörsidentiteten och notera dess `MessageId`.
+2. Kör klienten med `-Once` och kvittera prompten. Timeout eller renderingsfel ska inte räknas som läst.
+3. Läs maskinens status från 64-bitars PowerShell:
+
+```powershell
+Import-Module .\src\Module\ToastSql.psm1 -Force
+$config = Import-ToastConfig -Path .\config\config.psd1 -ResolveClientName
+$statePath = Get-ToastReadStatePath -Server $config.SqlServer -Port $config.SqlPort `
+  -Database $config.SqlDatabase -ComputerName $config.ClientName
+# Ersätt 42 med MessageId från ditt test:
+Get-ToastReadState -StatePath $statePath -MessageId 42
+```
+
+För ett kvitterat engångsmeddelande ska `Read` vara `True`, `ShowCount` vara `1` och `NextShowUtc` vara tomt. Kör `-Once` igen, sedan från en annan användares interaktiva session med samma SQL-server/port, databas och klientnamn: samma meddelande ska inte visas igen. Båda användarna behöver SQL-läsbehörighet. Lässtatus skickas aldrig tillbaka till SQL.
+
+### Felsökning
+
+| Symptom | Kontroll |
+| --- | --- |
+| Fel om 32-bitars process | Starta 64-bitars PowerShell; klienten avvisar 32-bitars registervyn. |
+| `Machine read state is not provisioned` eller åtkomst nekas till HKLM | Kör `deploy/Initialize-ToastReadState.ps1` som administratör i 64-bitars PowerShell på klientdatorn. Kör sedan klienten utan elevation; ge inte skrivåtkomst till hela `Software` eller programkatalogen. |
+| SQL-inloggning eller EXECUTE nekas | Kontrollera körande användares SQL-identitet, nätverksåtkomst och medlemskap i `ToastClientReader`. Använd separat administratörsidentitet för import och köning, inte utökade klienträttigheter. |
+| Inga meddelanden visas | Kontrollera att AD-datorns `Name` matchar `ClientName`, att dator/grupp är aktiva, att gruppmedlemskapet finns och att meddelandet inte är utgånget, avbrutet eller redan lokalt kvitterat. En annan sessions öppna prompt kan hålla maskinlåset; `-Once` hoppar då över omgången. |
+| Gamla meddelanden visas efter uppgradering | Tidigare HKCU-status och SQL-leveranshistorik importeras inte till HKLM. Se migrationsavsnitten innan utrullning; radera inte delad status som rutinmässig felsökning eftersom kvitterade meddelanden då kan visas igen. |
 
 ## Arkitektur
 
