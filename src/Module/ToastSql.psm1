@@ -538,7 +538,7 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
     )
 
     if ($null -eq $Result) {
-        return 'Acknowledge'
+        return 'Unknown'
     }
 
     $valuesToInspect = [System.Collections.Generic.List[string]]::new()
@@ -564,6 +564,7 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
         }
     }
 
+    if (@($valuesToInspect | Where-Object { $_.Trim() -eq 'Timeout' }).Count -gt 0) { return 'Timeout' }
     foreach ($value in $valuesToInspect) {
         $normalizedValue = if ([string]::IsNullOrWhiteSpace($value)) { $null } else { $value.Trim() }
         if ($null -eq $normalizedValue) {
@@ -595,7 +596,7 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
         }
     }
 
-    return 'Acknowledge'
+    return 'Unknown'
 }
 
 function Get-ToastAppDeployToolkitSubtitle {
@@ -716,7 +717,7 @@ function Show-ToastAppDeployToolkitPrompt {
             if ($buttonSettings.ButtonActivationType -eq 'Dismiss') { 'Dismiss' } else { 'Action' }
             break
         }
-        default { 'Acknowledge' }
+        default { $selection }
     }
 
     return [pscustomobject]@{
@@ -809,7 +810,162 @@ function Invoke-ToastNotification {
         -ButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonText')) `
         -ButtonArguments ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonArguments')) `
         -ButtonActivationType ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonActivationType')) `
-        -AcknowledgeButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'AcknowledgeButtonText')) | Out-Null
+        -AcknowledgeButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'AcknowledgeButtonText'))
+}
+
+function Get-ToastReadStatePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Server,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$Database,
+        [Parameter(Mandatory)][string]$ComputerName
+    )
+    Assert-ToastRegistryArchitecture
+    $scope = @($Server.ToLowerInvariant(), $Port, $Database.ToLowerInvariant(), $ComputerName.ToLowerInvariant()) | ConvertTo-Json -Compress
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($scope))).Replace('-', '') }
+    finally { $sha.Dispose() }
+    return "HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\$hash"
+}
+
+function Assert-ToastRegistryArchitecture {
+    if (-not [Environment]::Is64BitProcess) {
+        throw 'Machine read state requires 64-bit PowerShell; 32-bit registry redirection is not supported.'
+    }
+}
+
+function Get-ToastReadState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$StatePath, [Parameter(Mandatory)][long]$MessageId)
+    Assert-ToastRegistryArchitecture
+    if (-not (Test-Path -LiteralPath $StatePath -ErrorAction Stop)) {
+        return [pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }
+    }
+    $properties = Get-ItemProperty -LiteralPath $StatePath -ErrorAction Stop
+    $property = $properties.PSObject.Properties[[string]$MessageId]
+    if ($null -eq $property) {
+        return [pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }
+    }
+    $state = $property.Value | ConvertFrom-Json -ErrorAction Stop
+    if ($state.Read -isnot [bool] -or $state.ShowCount -isnot [long] -and $state.ShowCount -isnot [int] -or $state.ShowCount -lt 0) {
+        throw "Invalid local read state for message $MessageId."
+    }
+    if ($null -ne $state.NextShowUtc) {
+        $state.NextShowUtc = if ($state.NextShowUtc -is [datetime]) { $state.NextShowUtc.ToUniversalTime() } else {
+            [datetime]::Parse($state.NextShowUtc, [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+        }
+    }
+    return $state
+}
+
+function Set-ToastReadState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$StatePath, [Parameter(Mandatory)][long]$MessageId, [Parameter(Mandatory)]$State)
+    Assert-ToastRegistryArchitecture
+    if (-not (Test-Path -LiteralPath $StatePath -ErrorAction Stop)) {
+        $root = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState'
+        if (-not (Test-Path -LiteralPath $root -ErrorAction Stop)) {
+            throw 'Machine read state is not provisioned. An administrator must run deploy/Initialize-ToastReadState.ps1.'
+        }
+        New-Item -Path $StatePath -ErrorAction Stop | Out-Null
+    }
+    $nextShow = if ($null -ne $State.NextShowUtc) { $State.NextShowUtc.ToUniversalTime().ToString('o', [cultureinfo]::InvariantCulture) } else { $null }
+    $json = @{ Read = [bool]$State.Read; ShowCount = [int]$State.ShowCount; NextShowUtc = $nextShow } | ConvertTo-Json -Compress
+    New-ItemProperty -LiteralPath $StatePath -Name ([string]$MessageId) -Value $json -PropertyType String -Force -ErrorAction Stop | Out-Null
+}
+
+function New-ToastClientMutex {
+    param([Parameter(Mandatory)][string]$Name)
+    $mutexType = [System.Threading.Mutex]
+    if ($PSVersionTable.PSEdition -ne 'Desktop') {
+        Add-Type -AssemblyName System.Threading.AccessControl -ErrorAction Stop
+        $mutexType = [System.Threading.MutexAcl]
+    }
+    $rights = [System.Security.AccessControl.MutexRights]::Synchronize -bor [System.Security.AccessControl.MutexRights]::Modify
+    try { return $mutexType::OpenExisting($Name, $rights) }
+    catch [System.Threading.WaitHandleCannotBeOpenedException] { }
+    $security = [System.Security.AccessControl.MutexSecurity]::new()
+    $interactive = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-4')
+    $security.AddAccessRule([System.Security.AccessControl.MutexAccessRule]::new($interactive, $rights, [System.Security.AccessControl.AccessControlType]::Allow))
+    $created = $false
+    try {
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            return [System.Threading.Mutex]::new($false, $Name, [ref]$created, $security)
+        }
+        return [System.Threading.MutexAcl]::Create($false, $Name, [ref]$created, $security)
+    } catch [System.UnauthorizedAccessException] {
+        # Another session may have created it after OpenExisting; request only the granted rights.
+        return $mutexType::OpenExisting($Name, $rights)
+    }
+}
+
+function Invoke-ToastClientPass {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ConnectionString,
+        [AllowNull()][System.Data.SqlClient.SqlCredential]$SqlCredential,
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][string]$StatePath,
+        [int]$CommandTimeoutSeconds = 15
+    )
+    $mutex = New-ToastClientMutex -Name ('Global\ToastSql-' + ($StatePath -split '\\')[-1])
+    $ownsMutex = $false
+    try {
+        try { $ownsMutex = $mutex.WaitOne(0) }
+        catch [System.Threading.AbandonedMutexException] { $ownsMutex = $true }
+        if ($ownsMutex) { Invoke-ToastClientPoll @PSBoundParameters }
+    } finally {
+        if ($ownsMutex) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
+function Invoke-ToastClientPoll {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ConnectionString,
+        [AllowNull()][System.Data.SqlClient.SqlCredential]$SqlCredential,
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][string]$StatePath,
+        [int]$CommandTimeoutSeconds = 15
+    )
+    $sql = @{
+        ConnectionString = $ConnectionString
+        SqlCredential = $SqlCredential
+        CommandText = 'EXEC dbo.usp_GetPendingToast @ComputerName, @MessageId'
+        CommandTimeoutSeconds = $CommandTimeoutSeconds
+    }
+    # SQL returns every eligible message, so locally suppressed rows cannot fill a TOP (20) window.
+    $rows = Invoke-ToastSql @sql -Parameters @{ ComputerName = $ComputerName; MessageId = $null }
+    foreach ($row in $rows) {
+        $state = Get-ToastReadState -StatePath $StatePath -MessageId $row.MessageId
+        $repeatCount = Get-ToastObjectPropertyValue -InputObject $row -PropertyName 'RepeatCount'
+        $limit = if ($null -eq $repeatCount) { 1 } else { [int]$repeatCount }
+        if ($state.ShowCount -ge $limit -or ($null -ne $state.NextShowUtc -and $state.NextShowUtc -gt [datetime]::UtcNow)) { continue }
+        # A previous blocking prompt may have outlived cancellation, membership, or expiry.
+        $current = Invoke-ToastSql @sql -Parameters @{ ComputerName = $ComputerName; MessageId = [long]$row.MessageId }
+        $currentRows = if ($current -is [System.Data.DataTable]) { @($current.Rows) } else { @($current | Where-Object { $null -ne $_ }) }
+        if (@($currentRows).Count -eq 0) { continue }
+        $row = @($currentRows)[0]
+        # Check persistence before showing; a post-acknowledgement write error terminates polling rather than silently losing state.
+        Set-ToastReadState -StatePath $StatePath -MessageId $row.MessageId -State $state
+        try {
+            $result = Invoke-ToastNotification -ToastRow $row
+            if ($null -eq $result -or $result.ResultType -notin @('Acknowledge','Action','Dismiss')) {
+                Write-Warning "Message $($row.MessageId) was not acknowledged; it remains unread."
+                continue
+            }
+        } catch {
+            Write-Warning "Message $($row.MessageId) remains unread: $($_.Exception.Message)"
+            continue
+        }
+        $state.Read = $true
+        $state.ShowCount++
+        $interval = Get-ToastObjectPropertyValue -InputObject $row -PropertyName 'RepeatIntervalSeconds'
+        $state.NextShowUtc = if ($null -ne $interval -and $state.ShowCount -lt $limit) { [datetime]::UtcNow.AddSeconds([int]$interval) } else { $null }
+        Set-ToastReadState -StatePath $StatePath -MessageId $row.MessageId -State $state
+    }
 }
 
 function Import-ToastConfig {
@@ -1129,4 +1285,4 @@ function Invoke-ToastSql {
     }
 }
 
-Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastButtonSettings,Resolve-ToastAcknowledgeButtonText,Resolve-ToastScenario,Resolve-ToastDisplayMode,Invoke-ToastNotification,Set-ToastClientDependencyOptions
+Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastButtonSettings,Resolve-ToastAcknowledgeButtonText,Resolve-ToastScenario,Resolve-ToastDisplayMode,Invoke-ToastNotification,Set-ToastClientDependencyOptions,Get-ToastReadStatePath,Get-ToastReadState,Set-ToastReadState,Invoke-ToastClientPass,Invoke-ToastClientPoll
