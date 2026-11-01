@@ -320,8 +320,9 @@ Describe 'ToastSql module' {
             InModuleScope ToastSql {
                 Resolve-ToastAppDeployToolkitPromptSelection -Result 'Öppna GitHub' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Action'
                 Resolve-ToastAppDeployToolkitPromptSelection -Result 'Stäng' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Acknowledge'
-                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Timeout' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Acknowledge'
-                Resolve-ToastAppDeployToolkitPromptSelection -Result $null -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Acknowledge'
+                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Timeout' -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Timeout'
+                Resolve-ToastAppDeployToolkitPromptSelection -Result $null -ActionButtonText 'Öppna GitHub' -AcknowledgeButtonText 'Stäng' | Should -Be 'Unknown'
+                Resolve-ToastAppDeployToolkitPromptSelection -Result 'Unexpected result' -ActionButtonText 'Open' | Should -Be 'Unknown'
             }
 
             # Bundled version documents that the clicked button's text is returned.
@@ -1290,6 +1291,391 @@ function Show-InstallationPrompt {
 
                 { Invoke-ToastNotification -ToastRow $row } | Should -Throw '*DisplayMode must be one of*'
             }
+        }
+    }
+
+    Context 'registry read state' {
+        It 'isolates server database computer and port scopes without a user SID and normalizes name case' {
+            $scope = @{ Server = 'sql01'; Port = 1433; Database = 'Toast'; ComputerName = 'PC01' }
+            $path = Get-ToastReadStatePath @scope
+            $path | Should -Match '^HKLM:\\Software\\AppDeployToolkit-MessengerTool\\ReadState\\[A-F0-9]{64}$'
+            (Get-Command Get-ToastReadStatePath).Parameters.Keys | Should -Not -Contain 'UserSid'
+            foreach ($key in @('Server','Database','ComputerName','Port')) {
+                $changed = $scope.Clone()
+                $changed[$key] = if ($key -eq 'Port') { 1434 } else { $scope[$key] + 'other' }
+                Get-ToastReadStatePath @changed | Should -Not -Be $path
+            }
+            $scope.Server = 'SQL01'
+            Get-ToastReadStatePath @scope | Should -Be $path
+        }
+
+        It 'round trips atomic JSON registry state across independent reads' {
+            InModuleScope ToastSql {
+                $script:registryValue = $null
+                Mock Test-Path { $true }
+                Mock New-ItemProperty { $script:registryValue = $Value }
+                Mock Get-ItemProperty { [pscustomobject]@{ '42' = $script:registryValue } }
+                $next = [datetime]::UtcNow.AddMinutes(5)
+                Set-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42 -State ([pscustomobject]@{ Read = $true; ShowCount = 2; NextShowUtc = $next })
+                $state = Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42
+                $state.Read | Should -BeTrue
+                $state.ShowCount | Should -Be 2
+                $state.NextShowUtc.ToString('o') | Should -Be $next.ToString('o')
+                (Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42).ShowCount | Should -Be 2
+                Should -Invoke New-ItemProperty -Times 1 -ParameterFilter { $Name -eq '42' -and $PropertyType -eq 'String' -and $ErrorAction -eq 'Stop' }
+            }
+        }
+
+        It 'defaults missing state and rejects corrupt or inaccessible state' {
+            InModuleScope ToastSql {
+                Mock Test-Path { $false }
+                (Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42).ShowCount | Should -Be 0
+                Mock Test-Path { $true }
+                Mock Get-ItemProperty { [pscustomobject]@{ '42' = '{"Read":true,"ShowCount":-1,"NextShowUtc":null}' } }
+                { Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42 } | Should -Throw '*Invalid local read state*'
+                Mock Get-ItemProperty { throw 'Access denied' }
+                { Get-ToastReadState -StatePath 'HKLM:\Test' -MessageId 42 } | Should -Throw '*Access denied*'
+            }
+        }
+
+        It 'requires administrator provisioning instead of creating the machine root or falling back' {
+            InModuleScope ToastSql {
+                Mock Test-Path { $false }
+                Mock New-Item {}
+                { Set-ToastReadState -StatePath 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' -MessageId 42 -State ([pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }) } |
+                    Should -Throw '*administrator must run deploy/Initialize-ToastReadState.ps1*'
+                Should -Invoke New-Item -Times 0
+            }
+        }
+
+        It 'creates only the scope below a provisioned root and propagates denied writes' {
+            InModuleScope ToastSql {
+                Mock Test-Path { $LiteralPath -eq 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState' }
+                Mock New-Item {}
+                Mock New-ItemProperty { throw 'Access denied' }
+                $path = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope'
+                { Set-ToastReadState -StatePath $path -MessageId 42 -State ([pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }) } |
+                    Should -Throw '*Access denied*'
+                Should -Invoke New-Item -Times 1 -ParameterFilter { $Path -eq 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' -and -not $Force }
+                Should -Invoke New-ItemProperty -Times 1 -ParameterFilter { $LiteralPath -eq 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' }
+            }
+        }
+
+        It 'limits provisioning to the 64-bit machine read-state subtree and interactive data rights' {
+            $text = Get-Content "$PSScriptRoot/../deploy/Initialize-ToastReadState.ps1" -Raw
+            $text | Should -Match '#Requires -RunAsAdministrator'
+            $text | Should -Match 'Is64BitProcess'
+            $text | Should -Match ([regex]::Escape("`$path = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState'"))
+            $text | Should -Match "SecurityIdentifier\]::new\('S-1-5-4'\)"
+            $text | Should -Match 'RegistryRights\]::ReadKey'
+            $text | Should -Match 'RegistryRights\]::SetValue'
+            $text | Should -Match 'RegistryRights\]::CreateSubKey'
+            $text | Should -Match 'InheritanceFlags\]::ContainerInherit'
+            $text | Should -Match 'Set-Acl -LiteralPath \$path'
+            $text | Should -Not -Match 'FullControl|ChangePermissions|TakeOwnership|HKCU:'
+            $module = Get-Content "$PSScriptRoot/../src/Module/ToastSql.psm1" -Raw
+            $module | Should -Match 'function Assert-ToastRegistryArchitecture'
+            $module | Should -Match 'if \(-not \[Environment\]::Is64BitProcess\)'
+            $module | Should -Not -Match 'HKCU:|UserSid'
+        }
+    }
+
+    Context 'machine-wide polling concurrency' {
+        BeforeEach {
+            InModuleScope ToastSql {
+                $script:lockAvailable = $true
+                $script:releaseCount = 0
+                $script:disposeCount = 0
+                $script:passArgs = @{ ConnectionString = 'test'; ComputerName = 'PC01'; StatePath = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\scope' }
+                Mock New-ToastClientMutex {
+                    $lock = [pscustomobject]@{}
+                    $lock | Add-Member ScriptMethod WaitOne { param($timeout) return $script:lockAvailable }
+                    $lock | Add-Member ScriptMethod ReleaseMutex { $script:releaseCount++ }
+                    $lock | Add-Member ScriptMethod Dispose { $script:disposeCount++ }
+                    return $lock
+                }
+                Mock Invoke-ToastClientPoll {}
+            }
+        }
+
+        It 'skips a busy scope but allows a later session pass and releases before sleep' {
+            InModuleScope ToastSql {
+                $script:lockAvailable = $false
+                Invoke-ToastClientPass @script:passArgs
+                Should -Invoke Invoke-ToastClientPoll -Times 0
+                $script:releaseCount | Should -Be 0
+                $script:lockAvailable = $true
+                Invoke-ToastClientPass @script:passArgs
+                Should -Invoke Invoke-ToastClientPoll -Times 1
+                Should -Invoke New-ToastClientMutex -Times 2 -ParameterFilter { $Name -eq 'Global\ToastSql-scope' }
+                $script:releaseCount | Should -Be 1
+                $script:disposeCount | Should -Be 2
+            }
+        }
+
+        It 'releases the machine lock when polling fails' {
+            InModuleScope ToastSql {
+                Mock Invoke-ToastClientPoll { throw 'Persistence failed' }
+                { Invoke-ToastClientPass @script:passArgs } | Should -Throw '*Persistence failed*'
+                $script:releaseCount | Should -Be 1
+                $script:disposeCount | Should -Be 1
+            }
+        }
+
+        It 'grants cross-user synchronize and release rights with framework-specific built-in APIs' {
+            $text = Get-Content "$PSScriptRoot/../src/Module/ToastSql.psm1" -Raw
+            $text | Should -Match 'MutexRights\]::Synchronize'
+            $text | Should -Match 'MutexRights\]::Modify'
+            $text | Should -Match "SecurityIdentifier\]::new\('S-1-5-4'\)"
+            $text | Should -Match 'MutexAccessRule'
+            $text | Should -Match 'System.Threading.MutexAcl\]::Create'
+            $text | Should -Match '\$mutexType::OpenExisting\(\$Name, \$rights\)'
+            $text | Should -Match 'catch \[System.UnauthorizedAccessException\]'
+        }
+    }
+
+    Context 'read-only client polling' {
+        BeforeEach {
+            InModuleScope ToastSql {
+                $script:pollRows = @([pscustomobject]@{ MessageId = 42; RepeatCount = $null; RepeatIntervalSeconds = $null })
+                $script:localStates = @{}
+                $script:pollArgs = @{ ConnectionString = 'test'; ComputerName = 'PC01'; StatePath = 'HKLM:\Test' }
+                Mock Invoke-ToastSql {
+                    if ($null -eq $Parameters.MessageId) { return $script:pollRows }
+                    return $script:pollRows | Where-Object MessageId -eq $Parameters.MessageId
+                }
+                Mock Get-ToastReadState {
+                    if ($script:localStates.ContainsKey([long]$MessageId)) { return $script:localStates[[long]$MessageId] }
+                    return [pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }
+                }
+                Mock Set-ToastReadState {
+                    $script:localStates[[long]$MessageId] = [pscustomobject]@{ Read = $State.Read; ShowCount = $State.ShowCount; NextShowUtc = $State.NextShowUtc }
+                }
+                Mock Invoke-ToastNotification { [pscustomobject]@{ ResultType = 'Acknowledge' } }
+            }
+        }
+
+        It 'suppresses an acknowledged one-time message on later polls without database writes' {
+            InModuleScope ToastSql {
+                Invoke-ToastClientPoll @script:pollArgs
+                Invoke-ToastClientPoll @script:pollArgs
+                $script:localStates[42L].Read | Should -BeTrue
+                $script:localStates[42L].ShowCount | Should -Be 1
+                Should -Invoke Invoke-ToastNotification -Times 1
+                Should -Invoke Invoke-ToastSql -Times 3 -Exactly -ParameterFilter { -not $NonQuery -and $CommandText -eq 'EXEC dbo.usp_GetPendingToast @ComputerName, @MessageId' }
+            }
+        }
+
+        It 'persists repeat schedule and count and stops after the configured total' {
+            InModuleScope ToastSql {
+                $script:pollRows[0].RepeatCount = 2
+                $script:pollRows[0].RepeatIntervalSeconds = 600
+                Invoke-ToastClientPoll @script:pollArgs
+                $script:localStates[42L].NextShowUtc | Should -BeGreaterThan ([datetime]::UtcNow.AddMinutes(9))
+                Invoke-ToastClientPoll @script:pollArgs
+                Should -Invoke Invoke-ToastNotification -Times 1
+                $script:localStates[42L].NextShowUtc = [datetime]::UtcNow.AddSeconds(-1)
+                Invoke-ToastClientPoll @script:pollArgs
+                Invoke-ToastClientPoll @script:pollArgs
+                $script:localStates[42L].ShowCount | Should -Be 2
+                $script:localStates[42L].NextShowUtc | Should -BeNullOrEmpty
+                Should -Invoke Invoke-ToastNotification -Times 2
+            }
+        }
+
+        It 'does not acknowledge timeout null or unknown prompt outcomes' {
+            InModuleScope ToastSql {
+                foreach ($outcome in @('Timeout','Unknown')) {
+                    Mock Invoke-ToastNotification { [pscustomobject]@{ ResultType = $outcome } }
+                    Invoke-ToastClientPoll @script:pollArgs -WarningAction SilentlyContinue
+                    $script:localStates[42L].ShowCount | Should -Be 0
+                    $script:localStates[42L].Read | Should -BeFalse
+                }
+                Mock Invoke-ToastNotification { $null }
+                Invoke-ToastClientPoll @script:pollArgs -WarningAction SilentlyContinue
+                $script:localStates[42L].ShowCount | Should -Be 0
+            }
+        }
+
+        It 'leaves render and protocol failures unread but continues with other messages' {
+            InModuleScope ToastSql {
+                $script:pollRows += [pscustomobject]@{ MessageId = 43; RepeatCount = $null; RepeatIntervalSeconds = $null }
+                Mock Invoke-ToastNotification { throw 'Protocol failed' } -ParameterFilter { $ToastRow.MessageId -eq 42 }
+                Invoke-ToastClientPoll @script:pollArgs -WarningAction SilentlyContinue
+                $script:localStates[42L].ShowCount | Should -Be 0
+                $script:localStates[43L].ShowCount | Should -Be 1
+            }
+        }
+
+        It 'counts successful action and dismiss as explicit user acknowledgement' {
+            InModuleScope ToastSql {
+                foreach ($outcome in @('Action','Dismiss')) {
+                    $script:localStates.Clear()
+                    Mock Invoke-ToastNotification { [pscustomobject]@{ ResultType = $outcome } }
+                    Invoke-ToastClientPoll @script:pollArgs
+                    $script:localStates[42L].Read | Should -BeTrue
+                }
+            }
+        }
+
+        It 'does not starve an unread message behind more than twenty suppressed messages' {
+            InModuleScope ToastSql {
+                $script:pollRows = @(1..25 | ForEach-Object {
+                    $script:localStates[[long]$_] = [pscustomobject]@{ Read = $true; ShowCount = 1; NextShowUtc = $null }
+                    [pscustomobject]@{ MessageId = $_; RepeatCount = $null; RepeatIntervalSeconds = $null }
+                })
+                $script:pollRows += [pscustomobject]@{ MessageId = 26; RepeatCount = $null; RepeatIntervalSeconds = $null }
+                Invoke-ToastClientPoll @script:pollArgs
+                Should -Invoke Invoke-ToastNotification -Times 1 -ParameterFilter { $ToastRow.MessageId -eq 26 }
+            }
+        }
+
+        It 'rechecks expiry cancellation and membership before displaying' {
+            InModuleScope ToastSql {
+                Mock Invoke-ToastSql { $null } -ParameterFilter { $null -ne $Parameters.MessageId }
+                Invoke-ToastClientPoll @script:pollArgs
+                Should -Invoke Invoke-ToastNotification -Times 0
+                Should -Invoke Set-ToastReadState -Times 0
+            }
+        }
+
+        It 'finds an unread message behind twenty-five suppressed SQL DataTable rows' {
+            InModuleScope ToastSql {
+                Mock Invoke-ToastSql {
+                    $table = [System.Data.DataTable]::new()
+                    [void]$table.Columns.Add('MessageId', [long])
+                    [void]$table.Columns.Add('RepeatCount', [int])
+                    [void]$table.Columns.Add('RepeatIntervalSeconds', [int])
+                    foreach ($id in 1..26) {
+                        if ($null -eq $Parameters.MessageId -or $id -eq $Parameters.MessageId) {
+                            [void]$table.Rows.Add($id, [DBNull]::Value, [DBNull]::Value)
+                        }
+                    }
+                    Write-Output -NoEnumerate $table
+                }
+                foreach ($id in 1..25) {
+                    $script:localStates[[long]$id] = [pscustomobject]@{ Read = $true; ShowCount = 1; NextShowUtc = $null }
+                }
+                Invoke-ToastClientPoll @script:pollArgs
+                Should -Invoke Invoke-ToastNotification -Times 1 -Exactly -ParameterFilter {
+                    $ToastRow -is [System.Data.DataRow] -and $ToastRow.MessageId -eq 26
+                }
+                $script:localStates[26L].Read | Should -BeTrue
+                $script:localStates[26L].ShowCount | Should -Be 1
+            }
+        }
+
+        It 'handles the real SQL DataTable shape including an empty recheck' {
+            InModuleScope ToastSql {
+                Mock Invoke-ToastSql {
+                    $table = [System.Data.DataTable]::new()
+                    [void]$table.Columns.Add('MessageId', [long])
+                    [void]$table.Columns.Add('RepeatCount', [int])
+                    [void]$table.Columns.Add('RepeatIntervalSeconds', [int])
+                    [void]$table.Rows.Add(42, [DBNull]::Value, [DBNull]::Value)
+                    Write-Output -NoEnumerate $table
+                }
+                Invoke-ToastClientPoll @script:pollArgs
+                Should -Invoke Invoke-ToastNotification -Times 1 -ParameterFilter { $ToastRow -is [System.Data.DataRow] }
+                $script:localStates.Clear()
+                Mock Invoke-ToastSql {
+                    Write-Output -NoEnumerate ([System.Data.DataTable]::new())
+                } -ParameterFilter { $null -ne $Parameters.MessageId }
+                Invoke-ToastClientPoll @script:pollArgs
+                Should -Invoke Invoke-ToastNotification -Times 1
+            }
+        }
+
+        It 'fails visibly on registry errors before display or after acknowledgement' {
+            InModuleScope ToastSql {
+                Mock Set-ToastReadState { throw 'Cannot persist state' }
+                { Invoke-ToastClientPoll @script:pollArgs } | Should -Throw '*Cannot persist state*'
+                Should -Invoke Invoke-ToastNotification -Times 0
+                Mock Set-ToastReadState { if ($State.Read) { throw 'Cannot save acknowledgement' } }
+                { Invoke-ToastClientPoll @script:pollArgs } | Should -Throw '*Cannot save acknowledgement*'
+                Should -Invoke Invoke-ToastNotification -Times 1
+            }
+        }
+    }
+
+    Context 'AD computer import' {
+        BeforeEach {
+            function Get-ADComputer { param($Filter, $SearchBase) }
+            Mock Import-Module {}
+            Mock Get-ADComputer { [pscustomobject]@{ Name = 'PC01' }; [pscustomobject]@{ Name = 'PC01' }; [pscustomobject]@{ Name = "PC'02" } }
+            Mock Import-ToastConfig { @{ CommandTimeoutSeconds = 15 } }
+            Mock Get-ToastConnectionString { 'test' }
+            Mock Get-ToastSqlCredential { $null }
+            Mock Invoke-ToastSql {}
+        }
+        It 'uses OU and AD filter and parameterized idempotent membership inserts' {
+            $result = & "$PSScriptRoot/../src/Server/Import-ToastADComputers.ps1" -ConfigPath 'admin.psd1' -Tag ' IT ' -SearchBase 'OU=PC,DC=test' -Filter 'Enabled -eq $true'
+            $result.Count | Should -Be 2
+            Should -Invoke Get-ADComputer -Times 1 -ParameterFilter { $Filter -eq 'Enabled -eq $true' -and $SearchBase -eq 'OU=PC,DC=test' }
+            Should -Invoke Invoke-ToastSql -Times 2 -ParameterFilter {
+                $NonQuery -and $Parameters.GroupName -eq 'IT' -and
+                $CommandText -match 'UPDLOCK, HOLDLOCK' -and $CommandText -match 'BEGIN TRAN' -and
+                $CommandText -notmatch "PC'02" -and $CommandText -notmatch 'ToastDelivery'
+            }
+        }
+        It 'supports WhatIf without database writes' {
+            & "$PSScriptRoot/../src/Server/Import-ToastADComputers.ps1" -ConfigPath 'admin.psd1' -Tag 'IT' -WhatIf
+            Should -Invoke Invoke-ToastSql -Times 0
+        }
+        It 'validates tags and all computer names before writing' {
+            { & "$PSScriptRoot/../src/Server/Import-ToastADComputers.ps1" -ConfigPath 'admin.psd1' -Tag ('a' * 129) } | Should -Throw
+            Mock Get-ADComputer { [pscustomobject]@{ Name = 'PC01' }; [pscustomobject]@{ Name = ('x' * 257) } }
+            { & "$PSScriptRoot/../src/Server/Import-ToastADComputers.ps1" -ConfigPath 'admin.psd1' -Tag 'IT' } | Should -Throw '*between 1 and 256*'
+            Should -Invoke Invoke-ToastSql -Times 0
+        }
+    }
+
+    Context 'read-only SQL installation contracts' {
+        It 'keeps migration and consolidated queue definitions identical' {
+            $migration = Get-Content "$PSScriptRoot/../sql/005-read-only-clients.sql" -Raw
+            $installer = Get-Content "$PSScriptRoot/../sql/Install-BurntToast-SQLserver.sql" -Raw
+            $pattern = '(?s)CREATE OR ALTER PROCEDURE dbo.usp_QueueToastMessage.*?\r?\nGO'
+            $migrationQueue = [regex]::Match($migration, $pattern).Value
+            $installerQueue = [regex]::Match($installer, $pattern).Value
+            $migrationQueue | Should -Not -BeNullOrEmpty
+            $migrationQueue.Trim() | Should -Be $installerQueue.Trim()
+        }
+
+        It 'installs identical SELECT-only polling and least-privilege client permissions in both paths' {
+            $procedures = @()
+            foreach ($file in @('005-read-only-clients.sql','Install-BurntToast-SQLserver.sql')) {
+                $text = Get-Content "$PSScriptRoot/../sql/$file" -Raw
+                $proc = [regex]::Match($text, '(?s)CREATE OR ALTER PROCEDURE dbo.usp_GetPendingToast.*?\r?\nGO').Value
+                $proc | Should -Not -BeNullOrEmpty
+                $proc | Should -Not -Match '(?i)\b(UPDATE|INSERT|DELETE|MERGE|EXEC|TOP|UPDLOCK|LeaseId|ToastDelivery|LastSeenUtc)\b'
+                $proc | Should -Match 'm.IsUrgent DESC, m.MessageId'
+                $proc | Should -Match 'm.IsCancelled = 0'
+                $proc | Should -Match 'm.ExpiresUtc > SYSDATETIME\(\)'
+                $proc | Should -Match 'g.IsActive = 1'
+                $procedures += $proc
+                $text | Should -Match 'GRANT EXECUTE ON OBJECT::dbo.usp_GetPendingToast TO ToastClientReader'
+                $text | Should -Match 'DENY INSERT, UPDATE, DELETE TO ToastClientReader'
+                $text | Should -Match 'DENY EXECUTE ON OBJECT::dbo.usp_QueueToastMessage TO ToastClientReader'
+                $text | Should -Match 'DENY EXECUTE ON OBJECT::dbo.usp_RecordToastDelivery TO ToastClientReader'
+                $text | Should -Not -Match 'GRANT (INSERT|UPDATE|DELETE|CONTROL|EXECUTE TO)'
+                $text | Should -Not -Match 'INSERT dbo.ToastDelivery'
+                $text | Should -Not -Match 'DROP TABLE dbo.ToastDelivery'
+                $lastRecord = [regex]::Matches($text, '(?s)CREATE OR ALTER PROCEDURE dbo.usp_RecordToastDelivery.*?\r?\nGO') | Select-Object -Last 1
+                $lastRecord.Value | Should -Match 'THROW 50040'
+                $lastRecord.Value | Should -Not -Match 'UPDATE'
+            }
+            $procedures[0].Trim() | Should -Be $procedures[1].Trim()
+        }
+        It 'removes registration and database reporting from the client entry point' {
+            $text = Get-Content "$PSScriptRoot/../src/Client/Start-ToastClient.ps1" -Raw
+            $text | Should -Not -Match '\$Register|ClientGroups|usp_RecordToastDelivery|NonQuery|LeaseId|LastSeen'
+            $text | Should -Match 'WindowsIdentity'
+            $text | Should -Match 'Invoke-ToastClientPass'
+            $text | Should -Not -Match 'UserSid|HKCU:|RunAsAdministrator|Verb RunAs'
+            $task = Get-Content "$PSScriptRoot/../deploy/Register-ToastClientTask.ps1" -Raw
+            $task | Should -Match '\$identity.User.Value'
+            $task | Should -Match '-LogonType Interactive -RunLevel Limited'
+            $task | Should -Match '-MultipleInstances IgnoreNew'
         }
     }
 
