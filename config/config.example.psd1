@@ -1,4 +1,5 @@
-# Configuration used by the scripts. Copy to config.psd1 and edit values.
+# Shared template: copy to config.psd1 for clients or admin.local.psd1 for administration.
+# File names do not grant permissions; use separate Windows identities and SQL roles.
 #
 # Recommended production setup:
 # - Use Windows Integrated Security for clients when possible.

@@ -1,29 +1,20 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
-$script:ToastSupportedDisplayModes = @('AppDeployToolkit')
 $script:ToastDependencyOptions = @{
     AppDeployToolkitModulePath = $null
 }
-$script:ToastSupportedProtocolSchemes = @('http','https','mailto')
-$script:ToastSupportedScenarios = @('Default','Reminder','Alarm','IncomingCall')
 $script:ToastSqlNullParameterDefinitions = @{
     GroupName = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 128 }
     Title = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
     Subtitle = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
     Body = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 4000 }
-    Sound = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 20 }
-    IsUrgent = @{ SqlDbType = [System.Data.SqlDbType]::Bit }
     RepeatIntervalSeconds = @{ SqlDbType = [System.Data.SqlDbType]::Int }
     RepeatCount = @{ SqlDbType = [System.Data.SqlDbType]::Int }
-    ButtonText = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
     AcknowledgeButtonText = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 200 }
-    ButtonArguments = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 2048 }
     MessageId = @{ SqlDbType = [System.Data.SqlDbType]::BigInt }
-    LeaseId = @{ SqlDbType = [System.Data.SqlDbType]::UniqueIdentifier }
     ExpiresUtc = @{ SqlDbType = [System.Data.SqlDbType]::DateTime2 }
-    ButtonActivationType = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 20 }
-    DisplayMode = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 20 }
-    Scenario = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 20 }
+    ActiveDuration = @{ SqlDbType = [System.Data.SqlDbType]::Int }
+    DurationUnit = @{ SqlDbType = [System.Data.SqlDbType]::VarChar; Size = 10 }
 }
 
 function Get-ToastSqlCredentialValues {
@@ -153,123 +144,22 @@ function Resolve-ToastRepeatSettings {
     }
 }
 
-function ConvertTo-ToastProtocolUrl {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$ButtonArguments
-    )
-
-    $examples = "Use a raw URL such as 'https://example.com' or JSON such as '{""url"":""https://example.com""}'."
-    $candidate = $ButtonArguments.Trim()
-    $source = 'ButtonArguments'
-
-    if ($candidate.StartsWith('{')) {
-        try {
-            $json = $candidate | ConvertFrom-Json -ErrorAction Stop
-        } catch {
-            throw "ButtonArguments contains malformed JSON: $($_.Exception.Message) $examples"
-        }
-
-        $urlProperty = if ($null -ne $json -and $json -is [System.Management.Automation.PSCustomObject]) { $json.PSObject.Properties['url'] } else { $null }
-        if ($null -eq $urlProperty -or $urlProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($urlProperty.Value)) {
-            throw "ButtonArguments JSON must contain a non-empty string 'url' property. $examples"
-        }
-
-        $candidate = $urlProperty.Value.Trim()
-        $source = "ButtonArguments JSON 'url' value"
-    }
-
-    $uri = $null
-    $isValid = (
-        [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$uri) -and
-        $candidate -match '^[a-zA-Z][a-zA-Z0-9+.-]*:' -and
-        $script:ToastSupportedProtocolSchemes -contains $uri.Scheme.ToLowerInvariant()
-    )
-    if ($isValid -and $uri.Scheme -in @('http','https')) {
-        $isValid = ($candidate -match '^(?i)https?://[^/?#\s]') -and -not [string]::IsNullOrWhiteSpace($uri.Host)
-    }
-    if ($isValid -and $uri.Scheme -eq 'mailto') {
-        $isValid = $candidate -match '^(?i)mailto:\S'
-    }
-
-    if (-not $isValid) {
-        throw "$source must be a valid absolute URI using http, https, or mailto when ButtonActivationType is Protocol. $examples"
-    }
-
-    if ($candidate.Length -gt 2048) {
-        throw "$source must be 2048 characters or fewer."
-    }
-
-    return $candidate
-}
-
-function Resolve-ToastButtonSettings {
-    [CmdletBinding()]
-    param(
-        [string]$ButtonText,
-        [string]$ButtonArguments,
-        [ValidateSet('Protocol','Dismiss')][string]$ButtonActivationType
-    )
-
-    $normalizedButtonText = if ([string]::IsNullOrWhiteSpace($ButtonText)) { $null } else { $ButtonText.Trim() }
-    $normalizedButtonArguments = if ([string]::IsNullOrWhiteSpace($ButtonArguments)) { $null } else { $ButtonArguments.Trim() }
-
-    if (($null -eq $normalizedButtonText) -and ($null -ne $normalizedButtonArguments)) {
-        throw 'ButtonText must be specified when ButtonArguments is provided.'
-    }
-
-    if (($null -eq $normalizedButtonText) -and [string]::IsNullOrWhiteSpace($ButtonActivationType)) {
-        return @{
-            ButtonText = $null
-            ButtonArguments = $null
-            ButtonActivationType = $null
-        }
-    }
-
-    if ($null -eq $normalizedButtonText) {
-        throw 'ButtonText is required when ButtonActivationType is specified.'
-    }
-
-    $normalizedButtonActivationType = if ([string]::IsNullOrWhiteSpace($ButtonActivationType)) { 'Protocol' } else { $ButtonActivationType }
-    if ($normalizedButtonActivationType -eq 'Protocol') {
-        if ($null -eq $normalizedButtonArguments) {
-            throw 'ButtonArguments is required when ButtonActivationType is Protocol.'
-        }
-
-        # Accept a raw URL or JSON such as {"url":"https://..."} and store only the raw URL.
-        $normalizedButtonArguments = ConvertTo-ToastProtocolUrl -ButtonArguments $normalizedButtonArguments
-    } elseif ($null -eq $normalizedButtonArguments) {
-        # Dismiss buttons can omit arguments.
-    }
-
-    return @{
-        ButtonText = $normalizedButtonText
-        ButtonArguments = $normalizedButtonArguments
-        ButtonActivationType = $normalizedButtonActivationType
-    }
-}
-
 function Resolve-ToastAcknowledgeButtonText {
     [CmdletBinding()]
     param(
-        [AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText,
-        [AllowNull()][AllowEmptyString()][string]$ButtonText
+        [AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText
     )
 
     if ([string]::IsNullOrWhiteSpace($AcknowledgeButtonText)) {
-        return $null
+        return 'Stäng'
     }
 
     $normalizedAcknowledgeButtonText = $AcknowledgeButtonText.Trim()
     if ($normalizedAcknowledgeButtonText.Length -gt 200) {
         throw 'AcknowledgeButtonText must be 200 characters or fewer.'
     }
-
-    if (
-        -not [string]::IsNullOrWhiteSpace($ButtonText) -and
-        $normalizedAcknowledgeButtonText.Equals($ButtonText.Trim(), [System.StringComparison]::OrdinalIgnoreCase)
-    ) {
-        throw 'AcknowledgeButtonText must differ from ButtonText so the acknowledgement and action buttons can be distinguished.'
+    if ($normalizedAcknowledgeButtonText -eq 'Timeout') {
+        throw 'AcknowledgeButtonText cannot be Timeout because it is reserved by AppDeployToolkit.'
     }
 
     return $normalizedAcknowledgeButtonText
@@ -334,35 +224,38 @@ function Resolve-ToastQueueResult {
     }
 }
 
-function Resolve-ToastScenario {
+function Resolve-ToastExpirySettings {
     [CmdletBinding()]
     param(
-        [AllowNull()][string]$Scenario
+        [AllowNull()]$ExpiresUtc,
+        [AllowNull()]$ActiveDuration,
+        [AllowNull()][AllowEmptyString()][string]$DurationUnit,
+        [datetimeoffset]$Now = [datetimeoffset]::UtcNow
     )
-
-    $normalizedScenario = if ([string]::IsNullOrWhiteSpace($Scenario)) { 'Default' } else { $Scenario.Trim() }
-    $resolvedScenario = $script:ToastSupportedScenarios | Where-Object { $_.Equals($normalizedScenario, [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
-    if ($null -eq $resolvedScenario) {
-        throw "Scenario must be one of: $($script:ToastSupportedScenarios -join ', ')."
+    $hasExpiry = $null -ne $ExpiresUtc
+    $hasDuration = $null -ne $ActiveDuration
+    $hasUnit = -not [string]::IsNullOrWhiteSpace($DurationUnit)
+    if ($hasExpiry -eq ($hasDuration -or $hasUnit)) {
+        throw 'Specify exactly one of ExpiresUtc or ActiveDuration with DurationUnit.'
     }
-
-    return $resolvedScenario
-}
-
-function Resolve-ToastDisplayMode {
-    [CmdletBinding()]
-    param(
-        [AllowNull()][string]$DisplayMode
-    )
-
-    $normalizedDisplayMode = if ([string]::IsNullOrWhiteSpace($DisplayMode)) { 'AppDeployToolkit' } else { $DisplayMode.Trim() }
-    foreach ($supportedDisplayMode in $script:ToastSupportedDisplayModes) {
-        if ($supportedDisplayMode.Equals($normalizedDisplayMode, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $supportedDisplayMode
+    if ($hasExpiry) {
+        if ($ExpiresUtc -is [datetimeoffset]) {
+            $expiry = $ExpiresUtc
+        } elseif ($ExpiresUtc -is [datetime] -and $ExpiresUtc.Kind -ne [DateTimeKind]::Unspecified) {
+            $expiry = [datetimeoffset]$ExpiresUtc
+        } elseif ($ExpiresUtc -is [string] -and $ExpiresUtc.Trim() -match '(?i)T.*(?:Z|[+-]\d{2}:\d{2})$') {
+            $expiry = [datetimeoffset]::Parse($ExpiresUtc, [cultureinfo]::InvariantCulture)
+        } else {
+            throw 'ExpiresUtc must be a DateTimeOffset, a zoned DateTime, or an ISO 8601 string with Z or an explicit timezone offset.'
         }
+        if ($expiry -le $Now) { throw 'ExpiresUtc must be in the future.' }
+        return @{ ExpiresUtc = $expiry.UtcDateTime; ActiveDuration = $null; DurationUnit = $null }
     }
-
-    throw "DisplayMode must be one of: $($script:ToastSupportedDisplayModes -join ', ')."
+    if (-not ($hasDuration -and $hasUnit)) { throw 'ActiveDuration and DurationUnit are required together.' }
+    $duration = ConvertTo-ToastPositiveInt -Value $ActiveDuration -SettingName 'ActiveDuration'
+    if ($DurationUnit -notin @('Days','Hours','Minutes')) { throw 'DurationUnit must be Days, Hours, or Minutes.' }
+    $unit = @('Days','Hours','Minutes') | Where-Object { $_ -eq $DurationUnit }
+    return @{ ExpiresUtc = $null; ActiveDuration = $duration; DurationUnit = $unit }
 }
 
 function Set-ToastClientDependencyOptions {
@@ -430,40 +323,16 @@ function Get-ToastAppDeployToolkitPromptCommand {
     return $null
 }
 
-function Test-ToastCommandParameterMandatory {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]$Command,
-        [Parameter(Mandatory)][string]$ParameterName
-    )
-
-    if (-not $Command.Parameters.ContainsKey($ParameterName)) {
-        return $false
-    }
-
-    foreach ($attribute in $Command.Parameters[$ParameterName].Attributes) {
-        if ($attribute -is [System.Management.Automation.ParameterAttribute] -and $attribute.Mandatory) {
-            return $true
-        }
-    }
-
-    return $false
-}
-
 function Ensure-ToastNotificationDependencies {
     [CmdletBinding()]
-    param(
-        [AllowNull()][string]$DisplayMode = 'AppDeployToolkit'
-    )
-
-    [void](Resolve-ToastDisplayMode -DisplayMode $DisplayMode)
+    param()
 
     if ($null -ne (Get-ToastAppDeployToolkitPromptCommand)) {
         return
     }
 
     if (-not $script:ToastDependencyOptions.AppDeployToolkitModulePath) {
-        throw "DisplayMode 'AppDeployToolkit' requires a locally packaged PSAppDeployToolkit copy. Configure AppDeployToolkitModulePath to a version-pinned manifest, bootstrap script, or containing folder before starting the client."
+        throw "A locally packaged PSAppDeployToolkit copy is required. Configure AppDeployToolkitModulePath to a version-pinned manifest, bootstrap script, or containing folder before starting the client."
     }
 
     $importPath = Resolve-ToastDependencyImportPath `
@@ -476,65 +345,11 @@ function Ensure-ToastNotificationDependencies {
     }
 }
 
-function Resolve-ToastProtocolUri {
-    [CmdletBinding()]
-    param(
-        [string]$ButtonArguments
-    )
-
-    if ([string]::IsNullOrWhiteSpace([string]$ButtonArguments)) {
-        return $null
-    }
-
-    try {
-        $protocolUrl = ConvertTo-ToastProtocolUrl -ButtonArguments $ButtonArguments
-    } catch {
-        return $null
-    }
-
-    return [System.Uri]::new($protocolUrl, [System.UriKind]::Absolute)
-}
-
-function Resolve-ToastAppDeployToolkitButtonSettings {
-    [CmdletBinding()]
-    param(
-        [string]$ButtonText,
-        [string]$ButtonArguments,
-        [string]$ButtonActivationType
-    )
-
-    $buttonSettingsParameters = @{
-        ButtonText = $ButtonText
-        ButtonArguments = $ButtonArguments
-    }
-    if (-not [string]::IsNullOrWhiteSpace([string]$ButtonActivationType)) {
-        $buttonSettingsParameters['ButtonActivationType'] = [string]$ButtonActivationType
-    }
-
-    $buttonSettings = Resolve-ToastButtonSettings @buttonSettingsParameters
-    $protocolUri = $null
-
-    if ($buttonSettings.ButtonActivationType -eq 'Protocol') {
-        $protocolUri = Resolve-ToastProtocolUri -ButtonArguments $buttonSettings.ButtonArguments
-        if ($null -eq $protocolUri) {
-            throw 'AppDeployToolkit protocol buttons support only absolute http, https, or mailto URIs.'
-        }
-    }
-
-    return [pscustomobject]@{
-        ButtonText = $buttonSettings.ButtonText
-        ButtonArguments = $buttonSettings.ButtonArguments
-        ButtonActivationType = $buttonSettings.ButtonActivationType
-        ProtocolUri = $protocolUri
-    }
-}
-
 function Resolve-ToastAppDeployToolkitPromptSelection {
     [CmdletBinding()]
     param(
         [AllowNull()]$Result,
-        [string]$ActionButtonText,
-        [string]$AcknowledgeButtonText = 'Acknowledge'
+        [string]$AcknowledgeButtonText = 'Stäng'
     )
 
     if ($null -eq $Result) {
@@ -553,17 +368,6 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
         }
     }
 
-    if ($Result -is [int] -or $Result -is [long] -or $Result -is [int16] -or $Result -is [byte]) {
-        $numericResult = [int]$Result
-        if (-not [string]::IsNullOrWhiteSpace($ActionButtonText) -and $numericResult -eq 0) {
-            return 'Action'
-        }
-
-        if ($numericResult -eq 1) {
-            return 'Acknowledge'
-        }
-    }
-
     if (@($valuesToInspect | Where-Object { $_.Trim() -eq 'Timeout' }).Count -gt 0) { return 'Timeout' }
     foreach ($value in $valuesToInspect) {
         $normalizedValue = if ([string]::IsNullOrWhiteSpace($value)) { $null } else { $value.Trim() }
@@ -572,25 +376,7 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
         }
 
         if (
-            -not [string]::IsNullOrWhiteSpace($ActionButtonText) -and (
-                $normalizedValue.Equals($ActionButtonText, [System.StringComparison]::OrdinalIgnoreCase) -or
-                $normalizedValue.Equals('Left', [System.StringComparison]::OrdinalIgnoreCase) -or
-                $normalizedValue.Equals('ButtonLeft', [System.StringComparison]::OrdinalIgnoreCase) -or
-                $normalizedValue.Equals('Action', [System.StringComparison]::OrdinalIgnoreCase) -or
-                $normalizedValue.Equals('Primary', [System.StringComparison]::OrdinalIgnoreCase) -or
-                $normalizedValue.Equals('0', [System.StringComparison]::OrdinalIgnoreCase)
-            )
-        ) {
-            return 'Action'
-        }
-
-        if (
-            $normalizedValue.Equals($AcknowledgeButtonText, [System.StringComparison]::OrdinalIgnoreCase) -or
-            $normalizedValue.Equals('Right', [System.StringComparison]::OrdinalIgnoreCase) -or
-            $normalizedValue.Equals('ButtonRight', [System.StringComparison]::OrdinalIgnoreCase) -or
-            $normalizedValue.Equals('OK', [System.StringComparison]::OrdinalIgnoreCase) -or
-            $normalizedValue.Equals('Acknowledge', [System.StringComparison]::OrdinalIgnoreCase) -or
-            $normalizedValue.Equals('1', [System.StringComparison]::OrdinalIgnoreCase)
+            $normalizedValue.Equals($AcknowledgeButtonText, [System.StringComparison]::Ordinal)
         ) {
             return 'Acknowledge'
         }
@@ -599,22 +385,11 @@ function Resolve-ToastAppDeployToolkitPromptSelection {
     return 'Unknown'
 }
 
-function Get-ToastAppDeployToolkitSubtitle {
-    [CmdletBinding()]
-    param(
-        [AllowNull()][string]$Body
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($Body)) {
-        $bodyLines = [string]$Body -split "`r`n|`n|`r"
-        foreach ($bodyLine in $bodyLines) {
-            if (-not [string]::IsNullOrWhiteSpace($bodyLine)) {
-                return $bodyLine.Trim()
-            }
-        }
-    }
-
-    return 'Notification'
+function ConvertTo-ToastPlainText {
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    # PSADT parses bracket tags ([url], [bold], etc.), not XML. A word joiner
+    # preserves the visible bracket while preventing those tags from activating.
+    return $Text.Replace('[', ('[' + [char]0x2060))
 }
 
 function Show-ToastAppDeployToolkitPrompt {
@@ -624,171 +399,51 @@ function Show-ToastAppDeployToolkitPrompt {
         [Parameter(Mandatory)][AllowEmptyString()][string]$Title,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Body,
         [AllowNull()][AllowEmptyString()][string]$Subtitle,
-        [string]$ButtonText,
-        [string]$ButtonArguments,
-        [string]$ButtonActivationType,
-        [AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText
+        [AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText,
+        [AllowNull()]$ExpiresUtc
     )
 
-    Ensure-ToastNotificationDependencies -DisplayMode 'AppDeployToolkit'
+    Ensure-ToastNotificationDependencies
     $promptCommand = Get-ToastAppDeployToolkitPromptCommand
     if ($null -eq $promptCommand) {
-        throw "AppDeployToolkit display mode could not find Show-ADTInstallationPrompt or Show-InstallationPrompt after dependency loading."
+        throw "AppDeployToolkit could not find Show-ADTInstallationPrompt or Show-InstallationPrompt after dependency loading."
     }
 
-    $buttonSettings = Resolve-ToastAppDeployToolkitButtonSettings `
-        -ButtonText $ButtonText `
-        -ButtonArguments $ButtonArguments `
-        -ButtonActivationType $ButtonActivationType
-
-    $resolvedAcknowledgeButtonText = Resolve-ToastAcknowledgeButtonText `
-        -AcknowledgeButtonText $AcknowledgeButtonText `
-        -ButtonText $buttonSettings.ButtonText
-    if ($null -eq $resolvedAcknowledgeButtonText) {
-        $resolvedAcknowledgeButtonText = 'Acknowledge'
+    $resolvedAcknowledgeButtonText = Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText $AcknowledgeButtonText
+    foreach ($requiredParameter in @('Title','Message','ButtonRightText')) {
+        if (-not $promptCommand.Parameters.ContainsKey($requiredParameter)) {
+            throw "AppDeployToolkit prompt must support $requiredParameter."
+        }
     }
-
-    $subtitleFallback = Get-ToastAppDeployToolkitSubtitle -Body $Body
-    $titleIsMandatory = Test-ToastCommandParameterMandatory -Command $promptCommand -ParameterName 'Title'
-    $subtitleIsMandatory = Test-ToastCommandParameterMandatory -Command $promptCommand -ParameterName 'Subtitle'
     $promptParameters = @{
-        Message = [string]$Body
+        Title = ConvertTo-ToastPlainText -Text $Title
+        Message = ConvertTo-ToastPlainText -Text $Body
+        ButtonRightText = $resolvedAcknowledgeButtonText
     }
-
-    if ($promptCommand.Parameters.Keys -contains 'ButtonRightText') {
-        $promptParameters['ButtonRightText'] = $resolvedAcknowledgeButtonText
+    if ($promptCommand.Parameters.ContainsKey('Subtitle')) {
+        $promptParameters['Subtitle'] = if ([string]::IsNullOrWhiteSpace($Subtitle)) { 'Meddelande' } else { ConvertTo-ToastPlainText -Text $Subtitle }
+    } elseif (-not [string]::IsNullOrWhiteSpace($Subtitle)) {
+        $promptParameters['Message'] = ConvertTo-ToastPlainText -Text ($Subtitle + "`r`n`r`n" + $Body)
     }
-
-    if ($promptCommand.Parameters.Keys -contains 'Title') {
-        if (-not [string]::IsNullOrWhiteSpace($Title)) {
-            $promptParameters['Title'] = [string]$Title
-        } elseif ($titleIsMandatory) {
-            $promptParameters['Title'] = $subtitleFallback
-        }
-    }
-
-    if ($promptCommand.Parameters.Keys -contains 'Subtitle') {
-        if (-not [string]::IsNullOrWhiteSpace($Subtitle)) {
-            $promptParameters['Subtitle'] = [string]$Subtitle
-        } elseif ($subtitleIsMandatory) {
-            $promptParameters['Subtitle'] = $subtitleFallback
-        }
-    }
-
-    foreach ($iconMapping in @(
-        @{ ParameterName = 'Icon'; Value = 'Information' },
-        @{ ParameterName = 'IconType'; Value = 'Information' },
-        @{ ParameterName = 'MessageBoxIcon'; Value = 64 }
-    )) {
-        if ($promptCommand.Parameters.Keys -contains $iconMapping.ParameterName) {
-            $promptParameters[$iconMapping.ParameterName] = $iconMapping.Value
-            break
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($buttonSettings.ButtonText)) {
-        if ($promptCommand.Parameters.Keys -contains 'ButtonLeftText') {
-            $promptParameters['ButtonLeftText'] = [string]$buttonSettings.ButtonText
-        } else {
-            Write-Warning ("AppDeployToolkit prompt command '{0}' does not support ButtonLeftText; omitting action button '{1}' for MessageId {2}." -f $promptCommand.Name, $buttonSettings.ButtonText, $MessageId)
-        }
+    if ($promptCommand.Parameters.ContainsKey('NoExitOnTimeout')) {
+        $promptParameters['NoExitOnTimeout'] = $true
     }
 
     try {
-        $result = & $promptCommand @promptParameters
+        if ($PSBoundParameters.ContainsKey('ExpiresUtc') -and -not (Test-ToastRowUnexpired -ToastRow ([pscustomobject]@{ ExpiresUtc = $ExpiresUtc }))) {
+            return [pscustomobject]@{ Selection = 'Expired'; ResultType = 'Expired' }
+        }
+        $result = & $promptCommand @promptParameters -ErrorAction Stop
     } catch {
         throw [System.Exception]::new("AppDeployToolkit prompt execution failed for MessageId ${MessageId}.", $_.Exception)
     }
     $selection = Resolve-ToastAppDeployToolkitPromptSelection `
         -Result $result `
-        -ActionButtonText $buttonSettings.ButtonText `
         -AcknowledgeButtonText $resolvedAcknowledgeButtonText
-
-    if ($selection -eq 'Action' -and $buttonSettings.ButtonActivationType -eq 'Protocol') {
-        Write-Verbose ("Launching protocol action for MessageId {0}: {1}" -f $MessageId, $buttonSettings.ProtocolUri.AbsoluteUri)
-        $protocolActionError = Invoke-ToastProtocolAction -ButtonArguments $buttonSettings.ProtocolUri.AbsoluteUri
-        if (-not [string]::IsNullOrWhiteSpace($protocolActionError)) {
-            throw "Failed to open AppDeployToolkit action '$($buttonSettings.ProtocolUri.AbsoluteUri)' for MessageId ${MessageId}: $protocolActionError"
-        }
-    }
-
-    $resultType = switch ($selection) {
-        'Action' {
-            if ($buttonSettings.ButtonActivationType -eq 'Dismiss') { 'Dismiss' } else { 'Action' }
-            break
-        }
-        default { $selection }
-    }
 
     return [pscustomobject]@{
         Selection = $selection
-        ResultType = $resultType
-        ButtonActivationType = $buttonSettings.ButtonActivationType
-    }
-}
-
-function Test-ToastInteractiveUserSession {
-    [CmdletBinding()]
-    param()
-
-    # True when this process already runs as the interactive logged-on user (not SYSTEM, not session 0).
-    try {
-        if ([System.Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
-            return $false
-        }
-
-        if ([System.Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) {
-            return $false
-        }
-
-        return [System.Environment]::UserInteractive
-    } catch {
-        return $false
-    }
-}
-
-function Invoke-ToastProtocolAction {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$ButtonArguments
-    )
-
-    $launchTarget = $null
-    try {
-        # ConvertTo-ToastProtocolUrl throws a descriptive error (malformed JSON, missing url, unsupported scheme).
-        $protocolUrl = ConvertTo-ToastProtocolUrl -ButtonArguments $ButtonArguments
-        $launchTarget = ([System.Uri]::new($protocolUrl, [System.UriKind]::Absolute)).AbsoluteUri
-
-        if (Test-ToastInteractiveUserSession) {
-            # Already in the user's session: let the shell open the URL with the default browser/handler.
-            Write-Verbose "Opening '$launchTarget' with Start-Process in the current interactive user session."
-            Start-Process -FilePath $launchTarget -ErrorAction Stop | Out-Null
-            return $null
-        }
-
-        $startAsUserCommand = Get-Command -Name 'Start-ADTProcessAsUser' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -eq $startAsUserCommand) {
-            throw "The client is running as SYSTEM or outside the interactive user session, and PSAppDeployToolkit command 'Start-ADTProcessAsUser' is not available to open '$launchTarget' for the logged-on user."
-        }
-
-        # explorer.exe hands the URI to the logged-on user's default browser/protocol handler.
-        # The bundled PSAppDeployToolkit 4.1.8 Start-ADTProcessAsUser supports -FilePath, -ArgumentList and -NoWait (no -UseShellExecute).
-        $shellPath = [System.IO.Path]::Combine([System.Environment]::GetFolderPath('Windows'), 'explorer.exe')
-        Write-Verbose "Opening '$launchTarget' for the logged-on user via Start-ADTProcessAsUser '$shellPath'."
-        & $startAsUserCommand `
-            -FilePath $shellPath `
-            -ArgumentList @($launchTarget) `
-            -NoWait `
-            -ErrorAction Stop | Out-Null
-        return $null
-    } catch {
-        $launchError = $_.Exception.Message
-        $loggedArguments = if ($null -ne $launchTarget) { $launchTarget } else { [string]$ButtonArguments }
-        if ($loggedArguments.Length -gt 200) {
-            $loggedArguments = $loggedArguments.Substring(0, 200) + '...'
-        }
-        Write-Warning "Failed to open protocol action '$loggedArguments': $launchError"
-        return $launchError
+        ResultType = $selection
     }
 }
 
@@ -798,19 +453,34 @@ function Invoke-ToastNotification {
         [Parameter(Mandatory)]$ToastRow
     )
 
-    $displayModeValue = Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'DisplayMode'
-    [void](Resolve-ToastDisplayMode -DisplayMode $displayModeValue)
-    Ensure-ToastNotificationDependencies -DisplayMode $displayModeValue
-
     Show-ToastAppDeployToolkitPrompt `
         -MessageId (Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'MessageId') `
         -Title ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'Title')) `
         -Body ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'Body')) `
         -Subtitle ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'Subtitle')) `
-        -ButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonText')) `
-        -ButtonArguments ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonArguments')) `
-        -ButtonActivationType ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ButtonActivationType')) `
-        -AcknowledgeButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'AcknowledgeButtonText'))
+        -AcknowledgeButtonText ([string](Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'AcknowledgeButtonText')) `
+        -ExpiresUtc (Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ExpiresUtc')
+}
+
+function Test-ToastRowUnexpired {
+    param(
+        [Parameter(Mandatory)]$ToastRow,
+        [datetime]$Now = [datetime]::UtcNow
+    )
+    $value = Get-ToastObjectPropertyValue -InputObject $ToastRow -PropertyName 'ExpiresUtc'
+    if ($null -eq $value) { return $false }
+    try {
+        if ($value -is [datetimeoffset]) {
+            $expiry = $value.UtcDateTime
+        } elseif ($value -is [datetime]) {
+            # SQL datetime2 has no Kind; this contract stores UTC, never server-local time.
+            $expiry = if ($value.Kind -eq [DateTimeKind]::Unspecified) { [datetime]::SpecifyKind($value, [DateTimeKind]::Utc) } else { $value.ToUniversalTime() }
+        } else {
+            if ([string]$value -notmatch '(?i)T.*(?:Z|[+-]\d{2}:\d{2})$') { return $false }
+            $expiry = [datetimeoffset]::Parse([string]$value, [cultureinfo]::InvariantCulture).UtcDateTime
+        }
+        return $expiry -gt $Now
+    } catch { return $false }
 }
 
 function Get-ToastReadStatePath {
@@ -821,24 +491,16 @@ function Get-ToastReadStatePath {
         [Parameter(Mandatory)][string]$Database,
         [Parameter(Mandatory)][string]$ComputerName
     )
-    Assert-ToastRegistryArchitecture
     $scope = @($Server.ToLowerInvariant(), $Port, $Database.ToLowerInvariant(), $ComputerName.ToLowerInvariant()) | ConvertTo-Json -Compress
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($scope))).Replace('-', '') }
     finally { $sha.Dispose() }
-    return "HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\$hash"
-}
-
-function Assert-ToastRegistryArchitecture {
-    if (-not [Environment]::Is64BitProcess) {
-        throw 'Machine read state requires 64-bit PowerShell; 32-bit registry redirection is not supported.'
-    }
+    return "HKCU:\Software\AppDeployToolkit-MessengerTool\ReadState\$hash"
 }
 
 function Get-ToastReadState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$StatePath, [Parameter(Mandatory)][long]$MessageId)
-    Assert-ToastRegistryArchitecture
     if (-not (Test-Path -LiteralPath $StatePath -ErrorAction Stop)) {
         return [pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }
     }
@@ -862,13 +524,8 @@ function Get-ToastReadState {
 function Set-ToastReadState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$StatePath, [Parameter(Mandatory)][long]$MessageId, [Parameter(Mandatory)]$State)
-    Assert-ToastRegistryArchitecture
     if (-not (Test-Path -LiteralPath $StatePath -ErrorAction Stop)) {
-        $root = 'HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState'
-        if (-not (Test-Path -LiteralPath $root -ErrorAction Stop)) {
-            throw 'Machine read state is not provisioned. An administrator must run deploy/Initialize-ToastReadState.ps1.'
-        }
-        New-Item -Path $StatePath -ErrorAction Stop | Out-Null
+        New-Item -Path $StatePath -Force -ErrorAction Stop | Out-Null
     }
     $nextShow = if ($null -ne $State.NextShowUtc) { $State.NextShowUtc.ToUniversalTime().ToString('o', [cultureinfo]::InvariantCulture) } else { $null }
     $json = @{ Read = [bool]$State.Read; ShowCount = [int]$State.ShowCount; NextShowUtc = $nextShow } | ConvertTo-Json -Compress
@@ -877,27 +534,11 @@ function Set-ToastReadState {
 
 function New-ToastClientMutex {
     param([Parameter(Mandatory)][string]$Name)
-    $mutexType = [System.Threading.Mutex]
-    if ($PSVersionTable.PSEdition -ne 'Desktop') {
-        Add-Type -AssemblyName System.Threading.AccessControl -ErrorAction Stop
-        $mutexType = [System.Threading.MutexAcl]
-    }
-    $rights = [System.Security.AccessControl.MutexRights]::Synchronize -bor [System.Security.AccessControl.MutexRights]::Modify
-    try { return $mutexType::OpenExisting($Name, $rights) }
-    catch [System.Threading.WaitHandleCannotBeOpenedException] { }
-    $security = [System.Security.AccessControl.MutexSecurity]::new()
-    $interactive = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-4')
-    $security.AddAccessRule([System.Security.AccessControl.MutexAccessRule]::new($interactive, $rights, [System.Security.AccessControl.AccessControlType]::Allow))
-    $created = $false
-    try {
-        if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            return [System.Threading.Mutex]::new($false, $Name, [ref]$created, $security)
-        }
-        return [System.Threading.MutexAcl]::Create($false, $Name, [ref]$created, $security)
-    } catch [System.UnauthorizedAccessException] {
-        # Another session may have created it after OpenExisting; request only the granted rights.
-        return $mutexType::OpenExisting($Name, $rights)
-    }
+    return [System.Threading.Mutex]::new($false, $Name)
+}
+
+function Get-ToastClientUserSid {
+    return [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
 
 function Invoke-ToastClientPass {
@@ -909,7 +550,7 @@ function Invoke-ToastClientPass {
         [Parameter(Mandatory)][string]$StatePath,
         [int]$CommandTimeoutSeconds = 15
     )
-    $mutex = New-ToastClientMutex -Name ('Global\ToastSql-' + ($StatePath -split '\\')[-1])
+    $mutex = New-ToastClientMutex -Name ('Global\ToastSql-' + (Get-ToastClientUserSid) + '-' + ($StatePath -split '\\')[-1])
     $ownsMutex = $false
     try {
         try { $ownsMutex = $mutex.WaitOne(0) }
@@ -950,9 +591,10 @@ function Invoke-ToastClientPoll {
         $row = @($currentRows)[0]
         # Check persistence before showing; a post-acknowledgement write error terminates polling rather than silently losing state.
         Set-ToastReadState -StatePath $StatePath -MessageId $row.MessageId -State $state
+        if (-not (Test-ToastRowUnexpired -ToastRow $row)) { continue }
         try {
             $result = Invoke-ToastNotification -ToastRow $row
-            if ($null -eq $result -or $result.ResultType -notin @('Acknowledge','Action','Dismiss')) {
+            if ($null -eq $result -or $result.ResultType -ne 'Acknowledge') {
                 Write-Warning "Message $($row.MessageId) was not acknowledged; it remains unread."
                 continue
             }
@@ -1285,4 +927,4 @@ function Invoke-ToastSql {
     }
 }
 
-Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastButtonSettings,Resolve-ToastAcknowledgeButtonText,Resolve-ToastScenario,Resolve-ToastDisplayMode,Invoke-ToastNotification,Set-ToastClientDependencyOptions,Get-ToastReadStatePath,Get-ToastReadState,Set-ToastReadState,Invoke-ToastClientPass,Invoke-ToastClientPoll
+Export-ModuleMember -Function Import-ToastConfig,Test-ToastSqlPort,Get-ToastConnectionString,Get-ToastSqlCredential,Invoke-ToastSql,Resolve-ToastRepeatSettings,Resolve-ToastExpirySettings,Resolve-ToastAcknowledgeButtonText,Resolve-ToastQueueResult,Invoke-ToastNotification,Set-ToastClientDependencyOptions,Get-ToastReadStatePath,Get-ToastReadState,Set-ToastReadState,Invoke-ToastClientPass,Invoke-ToastClientPoll
