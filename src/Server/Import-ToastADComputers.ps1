@@ -15,14 +15,33 @@ $config = Import-ToastConfig -Path $ConfigPath -RequiredProperties @('SqlServer'
 $connectionString = Get-ToastConnectionString $config
 $credential = Get-ToastSqlCredential $config
 $adParameters = @{ Filter = $Filter; ErrorAction = 'Stop' }
-if ($PSBoundParameters.ContainsKey('SearchBase')) { $adParameters.SearchBase = $SearchBase }
+
+if ($PSBoundParameters.ContainsKey('SearchBase')) {
+    $searchObject = Get-ADObject -Identity $SearchBase -Properties ObjectClass -ErrorAction Stop
+    if ($searchObject.ObjectClass -contains 'group') {
+        if ($Filter -ne '*') {
+            throw 'Filter cannot be used with an AD group SearchBase; group membership determines the computer selection.'
+        }
+        $computers = @(Get-ADGroupMember -Identity $SearchBase -Recursive -ErrorAction Stop |
+            Where-Object { $_.ObjectClass -eq 'computer' } |
+            Select-Object -ExpandProperty Name -Unique)
+    }
+    else {
+        $adParameters.SearchBase = $SearchBase
+        $computers = @(Get-ADComputer @adParameters | Select-Object -ExpandProperty Name -Unique)
+    }
+}
+else {
+    $computers = @(Get-ADComputer @adParameters | Select-Object -ExpandProperty Name -Unique)
+}
+
 # Name matches the default client hostname (not DNSHostName). Validate the whole selection before writing.
-$computers = @(Get-ADComputer @adParameters | Select-Object -ExpandProperty Name -Unique)
 foreach ($computer in $computers) {
     if ([string]::IsNullOrWhiteSpace($computer) -or $computer.Length -gt 256) {
         throw 'AD computer Name must contain between 1 and 256 characters.'
     }
 }
+
 $sql = @'
 SET XACT_ABORT ON;
 BEGIN TRY
@@ -42,6 +61,7 @@ BEGIN CATCH
     THROW;
 END CATCH;
 '@
+
 foreach ($computer in $computers) {
     if ($PSCmdlet.ShouldProcess("$computer -> $Tag", 'Register computer and add notification group membership')) {
         Invoke-ToastSql -ConnectionString $connectionString -SqlCredential $credential -CommandText $sql -Parameters @{ ComputerName = $computer; GroupName = $Tag } -CommandTimeoutSeconds $config.CommandTimeoutSeconds -NonQuery
