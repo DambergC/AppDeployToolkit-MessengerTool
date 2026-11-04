@@ -11,13 +11,13 @@ if (-not [Environment]::Is64BitProcess) {
 }
 Import-Module "$PSScriptRoot\..\Module\ToastSql.psm1" -Force
 $config = Import-ToastConfig -Path $ConfigPath -RequiredProperties @('SqlServer','SqlDatabase','SqlPort','UseIntegratedSecurity','ClientName','AppDeployToolkitModulePath','Encrypt','TrustServerCertificate','ConnectTimeoutSeconds','CommandTimeoutSeconds') -NullableProperties @('ClientName','AppDeployToolkitModulePath') -ResolveClientName
-Set-ToastClientDependencyOptions -AppDeployToolkitModulePath $config.AppDeployToolkitModulePath
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $user.IsSystem -and -not [Environment]::UserInteractive) {
+    throw 'Run the client as SYSTEM or in an interactive user session.'
+}
+Set-ToastClientDependencyOptions -AppDeployToolkitModulePath $config.AppDeployToolkitModulePath -RunAsSystem:$user.IsSystem
 $conn = Get-ToastConnectionString $config
 $sqlCredential = Get-ToastSqlCredential $config
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-if ($user.IsSystem -or -not [Environment]::UserInteractive) {
-    throw 'Run the client in the interactive user session, not as SYSTEM.'
-}
 $statePath = Get-ToastReadStatePath -Server $config.SqlServer -Port $config.SqlPort -Database $config.SqlDatabase -ComputerName $config.ClientName
 if (-not (Test-Path -LiteralPath $statePath -ErrorAction Stop)) {
     throw 'Read-state scope is not provisioned. Run deploy\Initialize-ToastReadState.ps1 with this configuration in an elevated 64-bit PowerShell session before starting the client.'

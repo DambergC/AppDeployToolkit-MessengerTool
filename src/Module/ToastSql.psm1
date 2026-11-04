@@ -2,6 +2,7 @@
 
 $script:ToastDependencyOptions = @{
     AppDeployToolkitModulePath = $null
+    RunAsSystem = $false
 }
 $script:ToastSqlNullParameterDefinitions = @{
     GroupName = @{ SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 128 }
@@ -261,11 +262,13 @@ function Resolve-ToastExpirySettings {
 function Set-ToastClientDependencyOptions {
     [CmdletBinding()]
     param(
-        [string]$AppDeployToolkitModulePath
+        [string]$AppDeployToolkitModulePath,
+        [switch]$RunAsSystem
     )
 
     $script:ToastDependencyOptions = @{
         AppDeployToolkitModulePath = if ([string]::IsNullOrWhiteSpace($AppDeployToolkitModulePath)) { $null } else { $AppDeployToolkitModulePath.Trim() }
+        RunAsSystem = [bool]$RunAsSystem
     }
 }
 
@@ -313,7 +316,8 @@ function Get-ToastAppDeployToolkitPromptCommand {
     [CmdletBinding()]
     param()
 
-    foreach ($commandName in @('Show-ADTInstallationPrompt','Show-InstallationPrompt')) {
+    $commandNames = if ($script:ToastDependencyOptions.RunAsSystem) { @('Show-ADTInstallationPrompt') } else { @('Show-ADTInstallationPrompt','Show-InstallationPrompt') }
+    foreach ($commandName in $commandNames) {
         $command = Get-Command -Name $commandName -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $command) {
             return $command
@@ -341,8 +345,40 @@ function Ensure-ToastNotificationDependencies {
     Import-Module -Name $importPath -ErrorAction Stop
 
     if ($null -eq (Get-ToastAppDeployToolkitPromptCommand)) {
-        throw "AppDeployToolkit dependency '$importPath' did not expose Show-ADTInstallationPrompt or Show-InstallationPrompt."
+        throw "AppDeployToolkit dependency '$importPath' did not expose a supported prompt. SYSTEM requires Show-ADTInstallationPrompt with session bridging (use the bundled PSAppDeployToolkit 4.1.8)."
     }
+}
+
+function Test-ToastSystemUserSession {
+    [CmdletBinding()]
+    param()
+
+    foreach ($commandName in @('Get-ADTLoggedOnUser','Initialize-ADTModule','Get-ADTEnvironmentTable')) {
+        if ($null -eq (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) {
+            throw "SYSTEM session handling requires $commandName. Configure the bundled PSAppDeployToolkit 4.1.8."
+        }
+    }
+
+    if (@(Get-ADTLoggedOnUser -ErrorAction Stop | Where-Object IsActiveUserSession).Count -eq 0) {
+        Write-Verbose 'No active user session; postponing the dialog.'
+        return $false
+    }
+
+    # ADT caches its target session. Refresh it for every dialog, including after fast user switching.
+    Initialize-ADTModule -ErrorAction Stop
+    $target = (Get-ADTEnvironmentTable -ErrorAction Stop).RunAsActiveUser
+    if ($null -eq $target) {
+        Write-Verbose 'The active user logged off before the dialog could be shown.'
+        return $false
+    }
+    $activeTarget = @(Get-ADTLoggedOnUser -ErrorAction Stop | Where-Object {
+        $_.IsActiveUserSession -and $_.SessionId -eq $target.SessionId -and $_.SID -eq $target.SID
+    })
+    if ($activeTarget.Count -eq 0) {
+        Write-Verbose 'The selected user session is no longer active; postponing the dialog.'
+        return $false
+    }
+    return $true
 }
 
 function Resolve-ToastAppDeployToolkitPromptSelection {
@@ -407,6 +443,9 @@ function Show-ToastAppDeployToolkitPrompt {
     $promptCommand = Get-ToastAppDeployToolkitPromptCommand
     if ($null -eq $promptCommand) {
         throw "AppDeployToolkit could not find Show-ADTInstallationPrompt or Show-InstallationPrompt after dependency loading."
+    }
+    if ($script:ToastDependencyOptions.RunAsSystem -and -not (Test-ToastSystemUserSession)) {
+        return [pscustomobject]@{ Selection = 'NoActiveSession'; ResultType = 'NoActiveSession' }
     }
 
     $resolvedAcknowledgeButtonText = Resolve-ToastAcknowledgeButtonText -AcknowledgeButtonText $AcknowledgeButtonText

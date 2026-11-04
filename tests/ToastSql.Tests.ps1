@@ -391,6 +391,184 @@ Describe 'ToastSql module' {
         }
     }
 
+    Context 'SYSTEM dialog session handling' {
+        BeforeAll {
+            InModuleScope ToastSql {
+                function script:Get-ADTLoggedOnUser { [CmdletBinding()]param() }
+                function script:Initialize-ADTModule { [CmdletBinding()]param() }
+                function script:Get-ADTEnvironmentTable { [CmdletBinding()]param() }
+                function script:Show-ADTInstallationPrompt {
+                    [CmdletBinding()]
+                    param([string]$Title, [string]$Message, [string]$ButtonRightText, [switch]$NoWait)
+                    $ButtonRightText
+                }
+            }
+        }
+
+        BeforeEach {
+            InModuleScope ToastSql {
+                Set-ToastClientDependencyOptions -RunAsSystem
+                $script:systemSessions = @([pscustomobject]@{ SessionId = 2; SID = 'S-1-5-21-100'; IsActiveUserSession = $true })
+                $script:systemTarget = $script:systemSessions[0]
+                Mock Get-ADTLoggedOnUser { $script:systemSessions }
+                Mock Initialize-ADTModule {}
+                Mock Get-ADTEnvironmentTable { @{ RunAsActiveUser = $script:systemTarget } }
+                Mock Show-ADTInstallationPrompt { $ButtonRightText }
+            }
+        }
+
+        AfterEach {
+            InModuleScope ToastSql { Set-ToastClientDependencyOptions }
+        }
+
+        AfterAll {
+            InModuleScope ToastSql {
+                foreach ($name in @('Get-ADTLoggedOnUser','Initialize-ADTModule','Get-ADTEnvironmentTable','Show-ADTInstallationPrompt')) {
+                    Remove-Item "Function:\$name"
+                }
+            }
+        }
+
+        It 'waits for the bridged dialog and recognizes only the acknowledgement' {
+            InModuleScope ToastSql {
+                (Show-ToastAppDeployToolkitPrompt -Title T -Body B -AcknowledgeButtonText Close).ResultType | Should -Be 'Acknowledge'
+                Should -Invoke Initialize-ADTModule -Times 1 -Exactly
+                Should -Invoke Show-ADTInstallationPrompt -Times 1 -Exactly -ParameterFilter { -not $NoWait -and $ButtonRightText -eq 'Close' -and $ErrorAction -eq 'Stop' }
+            }
+        }
+
+        It 'does not initialize or display without an active user and retries after logon' {
+            InModuleScope ToastSql {
+                $activeSession = $script:systemSessions[0]
+                $script:systemSessions = @()
+                (Show-ToastAppDeployToolkitPrompt -Title T -Body B).ResultType | Should -Be 'NoActiveSession'
+                $script:systemSessions = @([pscustomobject]@{ SessionId = 3; SID = 'S-1-5-21-200'; IsActiveUserSession = $false })
+                (Show-ToastAppDeployToolkitPrompt -Title T -Body B).ResultType | Should -Be 'NoActiveSession'
+                Should -Invoke Initialize-ADTModule -Times 0
+                Should -Invoke Show-ADTInstallationPrompt -Times 0
+                $script:systemSessions = @($activeSession)
+                (Show-ToastAppDeployToolkitPrompt -Title T -Body B).ResultType | Should -Be 'Acknowledge'
+            }
+        }
+
+        It 'refreshes the selected session after user switching between dialogs' {
+            InModuleScope ToastSql {
+                Mock Initialize-ADTModule { $script:systemTarget = $script:systemSessions[0] }
+                Test-ToastSystemUserSession | Should -BeTrue
+                $script:systemSessions = @([pscustomobject]@{ SessionId = 4; SID = 'S-1-5-21-300'; IsActiveUserSession = $true })
+                Test-ToastSystemUserSession | Should -BeTrue
+                $script:systemTarget.SessionId | Should -Be 4
+                Should -Invoke Initialize-ADTModule -Times 2 -Exactly
+            }
+        }
+
+        It 'postpones when the user logs off or changes session during selection' {
+            InModuleScope ToastSql {
+                Mock Initialize-ADTModule { $script:systemTarget = $null }
+                (Show-ToastAppDeployToolkitPrompt -Title T -Body B).ResultType | Should -Be 'NoActiveSession'
+                Mock Initialize-ADTModule {
+                    $script:systemTarget = [pscustomobject]@{ SessionId = 5; SID = 'S-1-5-21-100' }
+                }
+                (Show-ToastAppDeployToolkitPrompt -Title T -Body B).ResultType | Should -Be 'NoActiveSession'
+                Mock Initialize-ADTModule { $script:systemSessions[0].IsActiveUserSession = $false }
+                (Show-ToastAppDeployToolkitPrompt -Title T -Body B).ResultType | Should -Be 'NoActiveSession'
+                Should -Invoke Show-ADTInstallationPrompt -Times 0
+            }
+        }
+
+        It 'surfaces session enumeration and initialization failures without displaying' {
+            InModuleScope ToastSql {
+                Mock Initialize-ADTModule { throw 'Session initialization failed' }
+                { Show-ToastAppDeployToolkitPrompt -Title T -Body B } | Should -Throw '*Session initialization failed*'
+                Mock Get-ADTLoggedOnUser { throw 'Session enumeration failed' }
+                { Show-ToastAppDeployToolkitPrompt -Title T -Body B } | Should -Throw '*Session enumeration failed*'
+                Should -Invoke Show-ADTInstallationPrompt -Times 0
+            }
+        }
+
+        It 'rejects the legacy prompt and missing session bridge APIs for SYSTEM' {
+            InModuleScope ToastSql {
+                function Show-InstallationPrompt { param([string]$Title, [string]$Message, [string]$ButtonRightText) }
+                try {
+                    Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Show-ADTInstallationPrompt' }
+                    Get-ToastAppDeployToolkitPromptCommand | Should -BeNullOrEmpty
+                    Set-ToastClientDependencyOptions
+                    (Get-ToastAppDeployToolkitPromptCommand).Name | Should -Be 'Show-InstallationPrompt'
+                    Set-ToastClientDependencyOptions -RunAsSystem
+                    Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Initialize-ADTModule' }
+                    { Test-ToastSystemUserSession } | Should -Throw '*SYSTEM session handling requires Initialize-ADTModule*'
+                } finally { Remove-Item Function:\Show-InstallationPrompt }
+            }
+        }
+    }
+
+    Context 'SYSTEM scheduled task registration' {
+        BeforeAll {
+            function New-ScheduledTaskAction { param($Execute, $Argument) }
+            function New-ScheduledTaskTrigger { param([switch]$AtStartup, [switch]$AtLogOn, $User) }
+            function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel) }
+            function New-ScheduledTaskSettingsSet {
+                param($MultipleInstances, $ExecutionTimeLimit, [switch]$StartWhenAvailable, $RestartCount, $RestartInterval,
+                    [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries)
+            }
+            function Register-ScheduledTask { param($TaskName, $Action, $Trigger, $Principal, $Settings, $Description, [switch]$Force) }
+        }
+
+        BeforeEach {
+            $script:previousSystemRoot = $env:SystemRoot
+            $env:SystemRoot = $TestDrive
+            $script:registrationArgs = @{
+                ScriptPath = (Resolve-Path "$PSScriptRoot/../src/Client/Start-ToastClient.ps1").Path
+                ConfigPath = (Resolve-Path "$PSScriptRoot/../config/config.example.psd1").Path
+                RunAsSystem = $true
+            }
+            Mock New-ScheduledTaskAction { [pscustomobject]@{ Execute = $Execute; Argument = $Argument } }
+            Mock New-ScheduledTaskTrigger { [pscustomobject]@{ AtStartup = [bool]$AtStartup; AtLogOn = [bool]$AtLogOn; User = $User } }
+            Mock New-ScheduledTaskPrincipal { [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType } }
+            Mock New-ScheduledTaskSettingsSet { [pscustomobject]@{ MultipleInstances = $MultipleInstances } }
+            Mock Register-ScheduledTask {}
+        }
+
+        AfterEach {
+            $env:SystemRoot = $script:previousSystemRoot
+        }
+
+        It 'registers SYSTEM without a password with startup and all-user logon triggers' {
+            & "$PSScriptRoot/../deploy/Register-ToastClientTask.ps1" @script:registrationArgs
+            Should -Invoke New-ScheduledTaskPrincipal -Times 1 -Exactly -ParameterFilter { $UserId -eq 'S-1-5-18' -and $LogonType -eq 'ServiceAccount' -and $RunLevel -eq 'Highest' }
+            Should -Invoke New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter { $AtStartup }
+            Should -Invoke New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter { $AtLogOn -and -not $User }
+            Should -Invoke New-ScheduledTaskAction -Times 1 -Exactly -ParameterFilter {
+                $Execute -eq (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -and
+                $Argument -match '-STA .* -File "[^"]+" -ConfigPath "[^"]+" -PollSeconds 30'
+            }
+            Should -Invoke New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
+                $MultipleInstances -eq 'IgnoreNew' -and $ExecutionTimeLimit -eq [timespan]::Zero -and
+                $StartWhenAvailable -and $RestartCount -eq 3 -and $RestartInterval -eq [timespan]::FromMinutes(1) -and
+                $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries
+            }
+            Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'AppDeployToolkit Toast SQL Client (SYSTEM)' -and $Force -and $Trigger.Count -eq 2 -and
+                $Principal.UserId -eq 'S-1-5-18' -and $Action.Argument -match '-ConfigPath'
+            }
+        }
+
+        It 'preserves an explicitly supplied task name' {
+            & "$PSScriptRoot/../deploy/Register-ToastClientTask.ps1" @script:registrationArgs -TaskName 'Custom client'
+            Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'Custom client' }
+        }
+
+        It 'rejects missing relative or quoted paths before registering a privileged task' {
+            foreach ($path in @('relative.ps1', (Join-Path $TestDrive 'missing.ps1'), ($script:registrationArgs.ScriptPath + '"'))) {
+                $arguments = $script:registrationArgs.Clone()
+                $arguments.ScriptPath = $path
+                { & "$PSScriptRoot/../deploy/Register-ToastClientTask.ps1" @arguments } | Should -Throw '*existing, absolute file paths without quotes*'
+            }
+            Should -Invoke Register-ScheduledTask -Times 0
+            Should -Invoke New-ScheduledTaskAction -Times 0
+        }
+    }
+
     Context 'machine-wide registry read state' {
         It 'uses HKLM and isolates database server computer and port with case normalization' {
             $scope = @{ Server = 'sql01'; Port = 1433; Database = 'Toast'; ComputerName = 'PC01' }
@@ -631,7 +809,7 @@ Describe 'ToastSql module' {
 
         It 'never acknowledges timeout null unknown or removed action outcomes' {
             InModuleScope ToastSql {
-                foreach ($outcome in @('Timeout','Unknown','Action','Dismiss','Expired')) {
+                foreach ($outcome in @('Timeout','Unknown','Action','Dismiss','Expired','NoActiveSession')) {
                     Mock Invoke-ToastNotification { [pscustomobject]@{ ResultType = $outcome } }
                     Invoke-ToastClientPoll @script:pollArgs -WarningAction SilentlyContinue
                     $script:localStates[42L].ShowCount | Should -Be 0
