@@ -495,7 +495,7 @@ function Get-ToastReadStatePath {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($scope))).Replace('-', '') }
     finally { $sha.Dispose() }
-    return "HKCU:\Software\AppDeployToolkit-MessengerTool\ReadState\$hash"
+    return "HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\$hash"
 }
 
 function Get-ToastReadState {
@@ -521,24 +521,72 @@ function Get-ToastReadState {
     return $state
 }
 
+function Write-ToastReadStateValue {
+    param(
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Value
+    )
+    if ($StatePath -notmatch '^HKLM:\\Software\\AppDeployToolkit-MessengerTool\\ReadState\\[A-F0-9]{64}$') {
+        throw 'Read-state writes must target a provisioned HKLM read-state scope.'
+    }
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+    $key = $null
+    try {
+        # The registry provider requests CreateSubKey for writes; open with only SetValue instead.
+        $key = $baseKey.OpenSubKey($StatePath.Substring(6), [Microsoft.Win32.RegistryKeyPermissionCheck]::Default, [System.Security.AccessControl.RegistryRights]::SetValue)
+        if ($null -eq $key) { throw "Read-state scope '$StatePath' is not provisioned." }
+        $key.SetValue($Name, $Value, [Microsoft.Win32.RegistryValueKind]::String)
+    } finally {
+        if ($null -ne $key) { $key.Dispose() }
+        $baseKey.Dispose()
+    }
+}
+
 function Set-ToastReadState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$StatePath, [Parameter(Mandatory)][long]$MessageId, [Parameter(Mandatory)]$State)
     if (-not (Test-Path -LiteralPath $StatePath -ErrorAction Stop)) {
-        New-Item -Path $StatePath -Force -ErrorAction Stop | Out-Null
+        throw "Read-state scope '$StatePath' is not provisioned. Run deploy\Initialize-ToastReadState.ps1 with the client configuration in an elevated 64-bit PowerShell session."
     }
     $nextShow = if ($null -ne $State.NextShowUtc) { $State.NextShowUtc.ToUniversalTime().ToString('o', [cultureinfo]::InvariantCulture) } else { $null }
     $json = @{ Read = [bool]$State.Read; ShowCount = [int]$State.ShowCount; NextShowUtc = $nextShow } | ConvertTo-Json -Compress
-    New-ItemProperty -LiteralPath $StatePath -Name ([string]$MessageId) -Value $json -PropertyType String -Force -ErrorAction Stop | Out-Null
+    Write-ToastReadStateValue -StatePath $StatePath -Name ([string]$MessageId) -Value $json
 }
 
 function New-ToastClientMutex {
     param([Parameter(Mandatory)][string]$Name)
-    return [System.Threading.Mutex]::new($false, $Name)
-}
-
-function Get-ToastClientUserSid {
-    return [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $security = [System.Security.AccessControl.MutexSecurity]::new()
+    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+        $security.AddAccessRule([System.Security.AccessControl.MutexAccessRule]::new(
+            [System.Security.Principal.SecurityIdentifier]::new($sid),
+            [System.Security.AccessControl.MutexRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow))
+    }
+    $rights = [System.Security.AccessControl.MutexRights]::Synchronize -bor [System.Security.AccessControl.MutexRights]::Modify
+    $security.AddAccessRule([System.Security.AccessControl.MutexAccessRule]::new(
+        [System.Security.Principal.SecurityIdentifier]::new('S-1-5-4'), $rights,
+        [System.Security.AccessControl.AccessControlType]::Allow))
+    try {
+        if ($PSVersionTable.PSEdition -eq 'Core') {
+            return [System.Threading.MutexAcl]::OpenExisting($Name, $rights)
+        }
+        return [System.Threading.Mutex]::OpenExisting($Name, $rights)
+    } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+        $created = $false
+        try {
+            if ($PSVersionTable.PSEdition -eq 'Core') {
+                return [System.Threading.MutexAcl]::Create($false, $Name, [ref]$created, $security)
+            }
+            return [System.Threading.Mutex]::new($false, $Name, [ref]$created, $security)
+        } catch [System.UnauthorizedAccessException] {
+            # Another user's client may have created the mutex since OpenExisting.
+            if ($PSVersionTable.PSEdition -eq 'Core') {
+                return [System.Threading.MutexAcl]::OpenExisting($Name, $rights)
+            }
+            return [System.Threading.Mutex]::OpenExisting($Name, $rights)
+        }
+    }
 }
 
 function Invoke-ToastClientPass {
@@ -550,7 +598,7 @@ function Invoke-ToastClientPass {
         [Parameter(Mandatory)][string]$StatePath,
         [int]$CommandTimeoutSeconds = 15
     )
-    $mutex = New-ToastClientMutex -Name ('Global\ToastSql-' + (Get-ToastClientUserSid) + '-' + ($StatePath -split '\\')[-1])
+    $mutex = New-ToastClientMutex -Name ('Global\ToastSql-' + ($StatePath -split '\\')[-1])
     $ownsMutex = $false
     try {
         try { $ownsMutex = $mutex.WaitOne(0) }

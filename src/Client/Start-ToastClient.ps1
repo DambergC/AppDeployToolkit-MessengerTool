@@ -6,6 +6,9 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if (-not [Environment]::Is64BitProcess) {
+    throw 'Run the client in 64-bit PowerShell to use the machine-wide HKLM read state.'
+}
 Import-Module "$PSScriptRoot\..\Module\ToastSql.psm1" -Force
 $config = Import-ToastConfig -Path $ConfigPath -RequiredProperties @('SqlServer','SqlDatabase','SqlPort','UseIntegratedSecurity','ClientName','AppDeployToolkitModulePath','Encrypt','TrustServerCertificate','ConnectTimeoutSeconds','CommandTimeoutSeconds') -NullableProperties @('ClientName','AppDeployToolkitModulePath') -ResolveClientName
 Set-ToastClientDependencyOptions -AppDeployToolkitModulePath $config.AppDeployToolkitModulePath
@@ -16,6 +19,9 @@ if ($user.IsSystem -or -not [Environment]::UserInteractive) {
     throw 'Run the client in the interactive user session, not as SYSTEM.'
 }
 $statePath = Get-ToastReadStatePath -Server $config.SqlServer -Port $config.SqlPort -Database $config.SqlDatabase -ComputerName $config.ClientName
+if (-not (Test-Path -LiteralPath $statePath -ErrorAction Stop)) {
+    throw 'Read-state scope is not provisioned. Run deploy\Initialize-ToastReadState.ps1 with this configuration in an elevated 64-bit PowerShell session before starting the client.'
+}
 do {
     Invoke-ToastClientPass -ConnectionString $conn -SqlCredential $sqlCredential -ComputerName $config.ClientName -StatePath $statePath -CommandTimeoutSeconds $config.CommandTimeoutSeconds
     if ($Once) { break }

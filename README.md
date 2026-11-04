@@ -1,6 +1,6 @@
 # AppDeployToolkit-MessengerTool
 
-Gruppbaserade meddelanden från SQL Server till interaktiva Windows-sessioner. Administratören importerar datorgrupper från AD och köar meddelanden. Klienten läser kön och visar en AppDeployToolkit-dialog med **en kvitteringsknapp** (standardtext `Stäng`). Lässtatus och eventuella repetitioner lagras lokalt **per användare i HKCU**, aldrig som leveranshistorik i SQL.
+Gruppbaserade meddelanden från SQL Server till interaktiva Windows-sessioner. Administratören importerar datorgrupper från AD och köar meddelanden. Klienten läser kön och visar en AppDeployToolkit-dialog med **en kvitteringsknapp** (standardtext `Stäng`). Lässtatus och eventuella repetitioner lagras lokalt **per dator i HKLM**, aldrig som leveranshistorik i SQL.
 
 ## Förutsättningar
 
@@ -170,7 +170,17 @@ Utelämna repetitionsparametrar för engångsvisning. Vid behov kan **antingen**
 
 ## 5. Starta och verifiera klienten
 
-Kör i avsedd användares **icke-eleverade, interaktiva 64-bitars PowerShell**:
+Provisionera först lässtatus på varje klientdator i **64-bitars PowerShell som administratör**, efter att klientkonfigurationen har färdigställts:
+
+```powershell
+$root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
+& (Join-Path $root 'deploy\Initialize-ToastReadState.ps1') `
+  -ConfigPath (Join-Path $root 'config\config.psd1')
+```
+
+Skriptet skapar `HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\<hash>` för konfigurationens SQL-server, port, databas och datornamn och skriver ut sökvägen. Kör det igen vid ändrat scope; befintliga statusvärden bevaras. Skapa inte nycklar eller ACL:er manuellt. Endast den exakta hashnyckelns ACL ändras: `SYSTEM` och lokala administratörer får full kontroll; interaktiva användare (`S-1-5-4`) får endast `ReadKey` och `SetValue`, inte skapa undernycklar, ändra ACL eller ta över ägarskap. Ingen skrivbehörighet ges på `HKLM:\Software`, applikationsnyckeln eller `ReadState`-roten.
+
+Kör sedan i avsedd användares **icke-eleverade, interaktiva 64-bitars PowerShell**:
 
 ```powershell
 $root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
@@ -183,13 +193,13 @@ Smoketest med ett nytt meddelande utan repetitioner:
 
 1. Importera testdatorn och köa ett meddelande med tillräcklig giltighetstid.
 2. Kör `-Once` och klicka på kvitteringsknappen.
-3. Kör samma kommando igen: meddelandet ska **inte** visas för samma användare.
-4. Logga in som en annan SQL-behörig användare på samma dator och kör `-Once`: den användaren har egen lässtatus och ska få meddelandet.
+3. Kör samma kommando igen: meddelandet ska **inte** visas på samma dator.
+4. Logga in som en annan SQL-behörig användare på samma dator och kör `-Once`: meddelandet ska **inte** visas igen eftersom lässtatus delas av alla användare i samma scope.
 5. Köa ett separat meddelande med kort giltighetstid och vänta tills det gått ut innan klientstart: det ska hoppas över. Timeout, okänt dialogresultat eller visningsfel ska lämna meddelandet oläst; ett nytt försök sker medan det fortfarande är giltigt.
 
-Klienten lagrar `Read`, `ShowCount` och `NextShowUtc` per meddelande i användarens HKCU, avgränsat av SQL-server/port, databas och datornamn. Registernyckeln skapas automatiskt vid behov; ingen manuell initiering eller maskinomfattande register-ACL behövs. En per-användar-mutex hindrar konkurrerande visningar för samma användarscope; en upptagen `-Once` kan avslutas utan visning. Andra användares kvittenser påverkar inte din status.
+Klienten lagrar `Read`, `ShowCount` och `NextShowUtc` som JSON i strängvärden namngivna efter `MessageId` under `HKEY_LOCAL_MACHINE\Software\AppDeployToolkit-MessengerTool\ReadState\<hash>` i 64-bitarsregistret. Hashen avgränsas fortfarande av SQL-server/port, databas och datornamn, inte användar-SID. Alla användare på datorn delar kvittenser och repetitionsräknare i samma scope. En maskinomfattande mutex med begränsad åtkomst för interaktiva användare hindrar konkurrerande visningar över sessioner; en upptagen `-Once` kan avslutas utan visning. Klienten skapar inte nycklar och avbryter med instruktion om provisionering när scope saknas.
 
-Medlemskap, avbrott och giltighet kontrolleras igen innan nästa väntande meddelande visas. **En redan öppen dialog stängs inte automatiskt när giltighetstiden går ut.** Ingen lässtatus skickas tillbaka till SQL. Lokal status är inte ett manipulationsskyddat revisionsregister; borttagen användarprofil/status kan göra att aktiva meddelanden visas igen. Återanvändning av meddelande-ID efter databasåterställning kräver separat hantering av lokal status.
+Medlemskap, avbrott och giltighet kontrolleras igen innan nästa väntande meddelande visas. **En redan öppen dialog stängs inte automatiskt när giltighetstiden går ut.** Ingen lässtatus skickas tillbaka till SQL. Lokal status är inte ett manipulationsskyddat revisionsregister: alla interaktiva användare kan ändra den delade statusen, även för andra användare, eller orsaka stopp med ogiltiga värden. Borttagen maskinstatus kan göra att aktiva meddelanden visas igen; borttagen användarprofil återställer inte status. Äldre HKCU-status migreras inte och används inte längre, så aktiva meddelanden kan visas igen vid uppgradering. Återanvändning av meddelande-ID efter databasåterställning kräver separat hantering av lokal status.
 
 ### Automatisk start per användare
 
@@ -215,9 +225,10 @@ Aktiviteten använder interaktiv inloggning, begränsade rättigheter och PowerS
 | --- | --- |
 | SQL-inloggning/EXECUTE nekas | Aktuell Windows-användare, AD-gruppmedlemskap och rätt databasroll; använd inte maskinkontot eller adminrättigheter som klientlösning. |
 | SQL-anslutning eller TLS misslyckas | Servernamn, TCP-port, brandvägg och betrodd certifikatkedja/namn; behåll certifikatvalidering. |
-| Inga meddelanden | Matchning mellan AD `Name` och `ClientName`, aktiv dator/grupp, medlemskap, UTC-giltighet, eventuell avbrytning och användarens lokala kvittens/repetitionsstatus. Stoppa dubbla klientprocesser för användaren. |
+| Inga meddelanden | Matchning mellan AD `Name` och `ClientName`, aktiv dator/grupp, medlemskap, UTC-giltighet, eventuell avbrytning och datorns delade kvittens/repetitionsstatus. Kontrollera andra aktiva klientsessioner. |
 | Dialogen kan inte visas | Interaktiv session, 64-bitars PowerShell, lokal ADT-sökväg samt läs-/köråtkomst till den medföljande modulen. |
-| Meddelandet visas igen efter kvittering | Kontrollera fel vid skrivning till HKCU, ändrat SQL-/datorscope, borttagen profil/status eller aktiverade repetitioner. |
+| Lässtatus saknas eller åtkomst nekas | Kör `deploy\Initialize-ToastReadState.ps1 -ConfigPath <klientkonfiguration>` som administratör i 64-bitars PowerShell på klientdatorn. Kontrollera den utskrivna HKLM-sökvägen; ge inte användare skrivåtkomst på överordnade nycklar. |
+| Meddelandet visas igen efter kvittering | Kontrollera fel vid skrivning till HKLM, ändrat SQL-/datorscope, borttagen maskinstatus eller aktiverade repetitioner. |
 
 Repositoryts befintliga Pester-svit körs på en dator med Pester installerat:
 
