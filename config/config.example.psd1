@@ -3,6 +3,7 @@
 #
 # Recommended production setup:
 # - Use Windows Integrated Security for clients when possible.
+# - SYSTEM tasks authenticate to remote SQL as DOMAIN\COMPUTERNAME$.
 # - Leave ClientName as $null if the client should auto-detect the local hostname.
 # - Do not commit real passwords or SQL credentials to source control.
 @{
@@ -31,6 +32,7 @@
     # Local path to a packaged PSAppDeployToolkit copy used by this client.
     # Set this to a version-pinned module manifest, module file, or containing folder
     # unless Show-ADTInstallationPrompt / Show-InstallationPrompt is already loaded in the session.
+    # SYSTEM requires the modern session bridge; use the bundled PSAppDeployToolkit 4.1.8.
     AppDeployToolkitModulePath = $null
 
     # Enable encryption for SQL connections.

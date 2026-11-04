@@ -9,7 +9,7 @@ Gruppbaserade meddelanden från SQL Server till interaktiva Windows-sessioner. A
 - TCP-åtkomst till SQL Server (vanligen port 1433), aktiverad SQL-TLS och ett betrott servercertifikat vars namn matchar servernamnet i konfigurationen.
 - Synkroniserade systemklockor på SQL-server, administrationsdator och klienter; alla giltighetskontroller använder UTC.
 - `sqlcmd` på installationsdatorn. Endast administrationsdatorn behöver RSAT-modulen `ActiveDirectory` och rätt att läsa aktuella AD-objekt.
-- Klienten måste köras utan elevation i den inloggade användarens interaktiva session, inte som `SYSTEM` eller i Session 0.
+- Klienten kan köras som `SYSTEM` via en schemalagd aktivitet eller utan elevation i användarens interaktiva session. SYSTEM-läget kräver medföljande PSAppDeployToolkit 4.1.8: SQL och lässtatus hanteras som SYSTEM, medan dialogen förmedlas till en aktiv användarsession. Utan aktiv session lämnas meddelandet okvitterat till ett senare försök.
 
 ## 1. Installera filer och skapa konfiguration
 
@@ -71,25 +71,27 @@ Kör **enbart** detta installationsskript i den uttryckligen valda, tomma databa
 
 ### Separera SQL-identiteter
 
-DBA skapar separata Windows-grupplogins och databasanvändare. Ersätt `EXAMPLE` och gruppnamnen med befintliga AD-grupper. Klientgruppen ska innehålla **användare**, inte datorernas maskinkonton:
+DBA skapar separata Windows-grupplogins och databasanvändare. Ersätt `EXAMPLE` och gruppnamnen med befintliga AD-grupper. För SYSTEM-läget ska klientgruppen innehålla **datorkonton**. Använd helst en avgränsad grupp för berörda datorer; `Domain Computers` fungerar om alla domändatorer ska få läsbehörigheten. För användarläget används i stället en separat användargrupp.
 
 ```sql
 USE [master];
 CREATE LOGIN [EXAMPLE\ToastMessageAdmins] FROM WINDOWS;
-CREATE LOGIN [EXAMPLE\ToastClientUsers] FROM WINDOWS;
+CREATE LOGIN [EXAMPLE\ToastClientComputers] FROM WINDOWS;
 GO
 USE [ToastNotifications];
 CREATE USER [EXAMPLE\ToastMessageAdmins] FOR LOGIN [EXAMPLE\ToastMessageAdmins];
-CREATE USER [EXAMPLE\ToastClientUsers] FOR LOGIN [EXAMPLE\ToastClientUsers];
+CREATE USER [EXAMPLE\ToastClientComputers] FOR LOGIN [EXAMPLE\ToastClientComputers];
 ALTER ROLE [ToastMessageAdmin] ADD MEMBER [EXAMPLE\ToastMessageAdmins];
-ALTER ROLE [ToastClientReader] ADD MEMBER [EXAMPLE\ToastClientUsers];
+ALTER ROLE [ToastClientReader] ADD MEMBER [EXAMPLE\ToastClientComputers];
 GO
 ```
 
 - `ToastClientReader`: `EXECUTE` på den SELECT-baserade `dbo.usp_GetPendingToast`; `INSERT`, `UPDATE` och `DELETE` nekas. Ingen klientregistrering eller skrivning till SQL.
 - `ToastMessageAdmin`: `EXECUTE` på `dbo.usp_QueueToastMessage` samt `SELECT`/`INSERT` på de tre måltabellerna `ToastGroup`, `ToastClient`, `ToastClientGroup`, vilket AD-importens parametriserade SQL använder.
 
-Kör import/köning med administratörens Windows-identitet och klienten med användarens Windows-identitet. Ge inte klientgruppen `db_owner`, `db_datawriter`, breda EXECUTE-rättigheter eller medlemskap i administratörsgruppen. Kontrollera även rättigheter via andra grupper och `public`.
+Kör import/köning med administratörens Windows-identitet. Med `UseIntegratedSecurity = $true` autentiserar SYSTEM på en domänansluten klient mot en fjärransluten SQL Server som `EXAMPLE\DATORNAMN$`, inte som den inloggade användaren. Användarläget använder däremot användarens Windows-identitet. SQL-servern måste kunna autentisera den valda domänidentiteten. Ge klientidentiteten rollen `ToastClientReader`: enbart SELECT-rättigheter ersätter inte EXECUTE på läsproceduren. För `Domain Computers`, ersätt `ToastClientComputers` med det faktiska gruppnamnet på alla tre ställena i exemplet.
+
+Ge inte klientgruppen `db_owner`, `db_datawriter`, breda EXECUTE-rättigheter eller medlemskap i administratörsgruppen. Kontrollera även rättigheter via andra grupper och `public`. Klienterna behöver inga skrivrättigheter i databasen.
 
 **Datornamn är ett urval, inte en autentiseringsgräns:** en behörig klientidentitet kan begära en annan registrerad dators meddelanden. Använd inte denna målstyrning för hemligt innehåll.
 
@@ -180,7 +182,7 @@ $root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
 
 Skriptet skapar `HKLM:\Software\AppDeployToolkit-MessengerTool\ReadState\<hash>` för konfigurationens SQL-server, port, databas och datornamn och skriver ut sökvägen. Kör det igen vid ändrat scope; befintliga statusvärden bevaras. Skapa inte nycklar eller ACL:er manuellt. Endast den exakta hashnyckelns ACL ändras: `SYSTEM` och lokala administratörer får full kontroll; interaktiva användare (`S-1-5-4`) får endast `ReadKey` och `SetValue`, inte skapa undernycklar, ändra ACL eller ta över ägarskap. Ingen skrivbehörighet ges på `HKLM:\Software`, applikationsnyckeln eller `ReadState`-roten.
 
-Kör sedan i avsedd användares **icke-eleverade, interaktiva 64-bitars PowerShell**:
+För SYSTEM-läget registrerar och startar du aktiviteten enligt nästa avsnitt. För ett manuellt test av användarläget, kör i avsedd SQL-behörig användares **icke-eleverade, interaktiva 64-bitars PowerShell**:
 
 ```powershell
 $root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
@@ -192,16 +194,39 @@ $clientConfig = Join-Path $root 'config\config.psd1'
 Smoketest med ett nytt meddelande utan repetitioner:
 
 1. Importera testdatorn och köa ett meddelande med tillräcklig giltighetstid.
-2. Kör `-Once` och klicka på kvitteringsknappen.
-3. Kör samma kommando igen: meddelandet ska **inte** visas på samma dator.
-4. Logga in som en annan SQL-behörig användare på samma dator och kör `-Once`: meddelandet ska **inte** visas igen eftersom lässtatus delas av alla användare i samma scope.
+2. Starta SYSTEM-aktiviteten med en användare inloggad, eller kör `-Once` i användarläget, och klicka på kvitteringsknappen.
+3. Vänta till nästa pollning eller kör `-Once` igen: meddelandet ska **inte** visas på samma dator.
+4. Byt inloggad användare på samma dator: meddelandet ska **inte** visas igen eftersom lässtatus delas av alla användare i samma scope. Endast användarläget kräver SQL-behörighet för den nya användaren.
 5. Köa ett separat meddelande med kort giltighetstid och vänta tills det gått ut innan klientstart: det ska hoppas över. Timeout, okänt dialogresultat eller visningsfel ska lämna meddelandet oläst; ett nytt försök sker medan det fortfarande är giltigt.
+6. I SYSTEM-läget: köa ett nytt meddelande utan någon aktiv användarsession. Ingen dialog eller kvittens ska skapas. Logga sedan in innan giltighetstiden går ut: dialogen ska visas. Prova även utloggning och användarbyte medan aktiviteten fortsätter köra.
 
 Klienten lagrar `Read`, `ShowCount` och `NextShowUtc` som JSON i strängvärden namngivna efter `MessageId` under `HKEY_LOCAL_MACHINE\Software\AppDeployToolkit-MessengerTool\ReadState\<hash>` i 64-bitarsregistret. Hashen avgränsas fortfarande av SQL-server/port, databas och datornamn, inte användar-SID. Alla användare på datorn delar kvittenser och repetitionsräknare i samma scope. En maskinomfattande mutex med begränsad åtkomst för interaktiva användare hindrar konkurrerande visningar över sessioner; en upptagen `-Once` kan avslutas utan visning. Klienten skapar inte nycklar och avbryter med instruktion om provisionering när scope saknas.
 
 Medlemskap, avbrott och giltighet kontrolleras igen innan nästa väntande meddelande visas. **En redan öppen dialog stängs inte automatiskt när giltighetstiden går ut.** Ingen lässtatus skickas tillbaka till SQL. Lokal status är inte ett manipulationsskyddat revisionsregister: alla interaktiva användare kan ändra den delade statusen, även för andra användare, eller orsaka stopp med ogiltiga värden. Borttagen maskinstatus kan göra att aktiva meddelanden visas igen; borttagen användarprofil återställer inte status. Äldre HKCU-status migreras inte och används inte längre, så aktiva meddelanden kan visas igen vid uppgradering. Återanvändning av meddelande-ID efter databasåterställning kräver separat hantering av lokal status.
 
-### Automatisk start per användare
+### Schemalagd aktivitet som SYSTEM
+
+Kör följande i **64-bitars PowerShell som administratör** efter provisionering och SQL-behörighet för datorkontot:
+
+```powershell
+$root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
+& (Join-Path $root 'deploy\Register-ToastClientTask.ps1') `
+  -ScriptPath (Join-Path $root 'src\Client\Start-ToastClient.ps1') `
+  -ConfigPath (Join-Path $root 'config\config.psd1') `
+  -RunAsSystem
+
+Start-ScheduledTask -TaskName 'AppDeployToolkit Toast SQL Client (SYSTEM)'
+```
+
+Aktiviteten kör som `S-1-5-18` (SYSTEM), utan sparat lösenord, vid datorstart och vid inloggning. Den fortsätter polla var 30:e sekund även utan inloggad användare men visar då ingen dialog. Den har ingen maximal körtid, tillåts på batteri, ignorerar nya starter när den redan kör och försöker starta om tre gånger med en minuts mellanrum vid fel. `Start-ScheduledTask` startar den direkt efter registrering; annars startar den vid nästa datorstart eller inloggning.
+
+PSAppDeployToolkit 4.1.8 väljer den senast inloggade aktiva användarsessionen. Klienten uppdaterar toolkitets sessionsval inför varje dialog och kontrollerar att vald session fortfarande är aktiv. Dialogen visas i **en** session, inte i alla samtidiga RDP-/konsolsessioner, och kvittensen gäller hela datorn. Dialoganropet väntar på knappsvaret; ingen kvittens skapas bara för att dialogen startas. Den äldre `Show-InstallationPrompt` används aldrig i SYSTEM-läget.
+
+SYSTEM-processen kör fortfarande i Session 0; ett inloggningsvillkor flyttar inte processen. Det är toolkitets sessionsbrygga som visar dialogen hos användaren. Skydda därför skript, konfiguration och hela toolkitkatalogen mot ändringar av vanliga användare, och använd betrodda lokala, absoluta sökvägar. Använd inte en användarskrivbar sökväg för SYSTEM-aktiviteten.
+
+Stoppa och ta bort tidigare användaraktiviteter vid övergång till SYSTEM, så att de inte fortsätter ansluta till SQL med användaridentiteter. Aktivitetsnamnen skiljer sig avsiktligt; registrering av SYSTEM-aktiviteten tar inte bort befintliga aktiviteter.
+
+### Automatisk start per användare (alternativ)
 
 Efter godkänt smoketest registrerar varje avsedd användare sin egen inloggningsaktivitet:
 
@@ -212,7 +237,7 @@ $root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
   -ConfigPath (Join-Path $root 'config\config.psd1')
 ```
 
-Aktiviteten använder interaktiv inloggning, begränsade rättigheter och PowerShell med `-STA`; den startar vid nästa inloggning. Registrera inte som `SYSTEM`. Använd beständiga, absoluta sökvägar och behåll filskyddet från steg 1. Stoppa manuellt startad polling innan aktiviteten testas. För manuell kontinuerlig körning:
+Utan `-RunAsSystem` bevaras användarläget: aktiviteten använder interaktiv inloggning, begränsade rättigheter och PowerShell med `-STA`; den startar vid nästa inloggning. Båda lägena använder Windows PowerShell från `System32`. Använd beständiga, absoluta sökvägar och behåll filskyddet från steg 1. Stoppa manuellt startad polling innan aktiviteten testas. För manuell kontinuerlig körning:
 
 ```powershell
 & (Join-Path $root 'src\Client\Start-ToastClient.ps1') `
@@ -223,10 +248,10 @@ Aktiviteten använder interaktiv inloggning, begränsade rättigheter och PowerS
 
 | Symptom | Kontroll |
 | --- | --- |
-| SQL-inloggning/EXECUTE nekas | Aktuell Windows-användare, AD-gruppmedlemskap och rätt databasroll; använd inte maskinkontot eller adminrättigheter som klientlösning. |
+| SQL-inloggning/EXECUTE nekas | SYSTEM mot fjärr-SQL: datorkontot `DOMÄN\DATORNAMN$` och dess AD-grupp ska ha `ToastClientReader`. Användarläget: kontrollera användarens behörighet. Ge inte administratörsrättigheter som klientlösning. |
 | SQL-anslutning eller TLS misslyckas | Servernamn, TCP-port, brandvägg och betrodd certifikatkedja/namn; behåll certifikatvalidering. |
 | Inga meddelanden | Matchning mellan AD `Name` och `ClientName`, aktiv dator/grupp, medlemskap, UTC-giltighet, eventuell avbrytning och datorns delade kvittens/repetitionsstatus. Kontrollera andra aktiva klientsessioner. |
-| Dialogen kan inte visas | Interaktiv session, 64-bitars PowerShell, lokal ADT-sökväg samt läs-/köråtkomst till den medföljande modulen. |
+| Dialogen kan inte visas | Aktiv användarsession, 64-bitars PowerShell, lokal ADT-sökväg samt läs-/köråtkomst till den medföljande modulen. SYSTEM kräver sessionsbryggan i PSAppDeployToolkit 4.1.8; en frånkopplad RDP-session räcker inte. |
 | Lässtatus saknas eller åtkomst nekas | Kör `deploy\Initialize-ToastReadState.ps1 -ConfigPath <klientkonfiguration>` som administratör i 64-bitars PowerShell på klientdatorn. Kontrollera den utskrivna HKLM-sökvägen; ge inte användare skrivåtkomst på överordnade nycklar. |
 | Meddelandet visas igen efter kvittering | Kontrollera fel vid skrivning till HKLM, ändrat SQL-/datorscope, borttagen maskinstatus eller aktiverade repetitioner. |
 
