@@ -429,17 +429,6 @@ function Show-ToastAppDeployToolkitPrompt {
         $promptParameters['NoExitOnTimeout'] = $true
     }
 
-    foreach ($iconMapping in @(
-        @{ ParameterName = 'Icon'; Value = 'Information' },
-        @{ ParameterName = 'IconType'; Value = 'Information' },
-        @{ ParameterName = 'MessageBoxIcon'; Value = 64 }
-    )) {
-        if ($promptCommand.Parameters.Keys -contains $iconMapping.ParameterName) {
-            $promptParameters[$iconMapping.ParameterName] = $iconMapping.Value
-            break
-        }
-    }
-
     try {
         if ($PSBoundParameters.ContainsKey('ExpiresUtc') -and -not (Test-ToastRowUnexpired -ToastRow ([pscustomobject]@{ ExpiresUtc = $ExpiresUtc }))) {
             return [pscustomobject]@{ Selection = 'Expired'; ResultType = 'Expired' }

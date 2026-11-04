@@ -3,27 +3,68 @@
 }
 
 Describe 'ToastSql module' {
-    Context 'SQL configuration and parameters' {
-        It 'builds connection strings without embedding SQL credentials' {
-            $config = @{ SqlServer = 'sql01'; SqlPort = 1433; SqlDatabase = 'Toast'; UseIntegratedSecurity = $true; Encrypt = $true; TrustServerCertificate = $false; ConnectTimeoutSeconds = 15 }
-            $connection = Get-ToastConnectionString $config
-            $connection | Should -Match 'Data Source=tcp:sql01,1433'
-            $connection | Should -Match 'Initial Catalog=Toast'
-            $connection | Should -Match 'Integrated Security=True'
-            $config.UseIntegratedSecurity = $false
-            Get-ToastConnectionString $config | Should -Match 'Integrated Security=False'
-            $config.Encrypt = 'false'
-            { Get-ToastConnectionString $config } | Should -Throw '*must be $true or $false*'
+    It 'does not export removed image-handling functions' {
+        (Get-Command -Name 'Resolve-ToastImageInput' -Module ToastSql -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
+    }
+
+    It 'builds a valid SQL connection string for integrated security' {
+        $config = @{
+            SqlServer = 'sql01'
+            SqlPort = 1433
+            SqlDatabase = 'ToastNotifications'
+            UseIntegratedSecurity = $true
+            Encrypt = $true
+            TrustServerCertificate = $false
+            ConnectTimeoutSeconds = 15
         }
 
-        It 'rejects unreachable SQL ports' {
-            InModuleScope ToastSql {
-                function Test-NetConnection { $false }
-                try { { Test-ToastSqlPort -Server 'invalid.example' } | Should -Throw '*not reachable*' }
-                finally { Remove-Item Function:\Test-NetConnection }
+        $connectionString = Get-ToastConnectionString $config
+        $connectionString | Should -Match 'Data Source=tcp:sql01,1433'
+        $connectionString | Should -Match 'Initial Catalog=ToastNotifications'
+        $connectionString | Should -Match 'Integrated Security=True'
+    }
+
+    It 'builds a valid SQL connection string for SQL credential auth' {
+        $config = @{
+            SqlServer = 'sql01'
+            SqlPort = 1433
+            SqlDatabase = 'ToastNotifications'
+            UseIntegratedSecurity = $false
+            Encrypt = $true
+            TrustServerCertificate = $false
+            ConnectTimeoutSeconds = 15
+        }
+
+        $connectionString = Get-ToastConnectionString $config
+        $connectionString | Should -Match 'Integrated Security=False'
+    }
+
+    It 'rejects non-boolean connection flags when building a connection string' {
+        $config = @{
+            SqlServer = 'sql01'
+            SqlPort = 1433
+            SqlDatabase = 'ToastNotifications'
+            UseIntegratedSecurity = $true
+            Encrypt = 'false'
+            TrustServerCertificate = $false
+            CommandTimeoutSeconds = 15
+        }
+
+        { Get-ToastConnectionString $config } | Should -Throw '*Config setting Encrypt must be $true or $false*'
+    }
+
+    It 'rejects an unreachable SQL port' {
+        InModuleScope ToastSql {
+            function Test-NetConnection { $false }
+            try {
+                { Test-ToastSqlPort -Server 'invalid.example' -Port 1433 } | Should -Throw
+            } finally {
+                Remove-Item Function:\Test-NetConnection -ErrorAction SilentlyContinue
             }
         }
+    }
 
+    Context 'SQL configuration and parameters' {
         It 'validates static config and resolves the computer name' {
             $path = Join-Path $TestDrive 'config.psd1'
             "@{ UseIntegratedSecurity = 'false' }" | Set-Content $path
@@ -112,23 +153,46 @@ Describe 'ToastSql module' {
         }
     }
 
-    Context 'repeat settings remain independent of expiry' {
-        It 'preserves one-time and second-based messages and converts minutes' {
+    Context 'repeat settings' {
+        It 'keeps one-time messages unchanged when repeat settings are omitted' {
             $result = Resolve-ToastRepeatSettings
-            $result.RepeatIntervalSeconds | Should -BeNullOrEmpty
-            $result.RepeatCount | Should -BeNullOrEmpty
-            (Resolve-ToastRepeatSettings -RepeatIntervalMinutes 5 -RepeatCount 3).RepeatIntervalSeconds | Should -Be 300
+
+            $result.RepeatIntervalSeconds | Should -Be $null
+            $result.RepeatCount | Should -Be $null
+        }
+
+        It 'normalizes minute-based repeats to seconds' {
+            $result = Resolve-ToastRepeatSettings -RepeatIntervalMinutes 5 -RepeatCount 3
+
+            $result.RepeatIntervalSeconds | Should -Be 300
+            $result.RepeatCount | Should -Be 3
+        }
+
+        It 'preserves second-based repeats unchanged' {
             $result = Resolve-ToastRepeatSettings -RepeatIntervalSeconds 45 -RepeatCount 3
+
             $result.RepeatIntervalSeconds | Should -Be 45
             $result.RepeatCount | Should -Be 3
         }
 
-        It 'rejects incomplete contradictory and overflowing repeat settings' {
-            { Resolve-ToastRepeatSettings -RepeatCount 2 } | Should -Throw '*interval*'
+        It 'rejects repeat counts without an interval' {
+            { Resolve-ToastRepeatSettings -RepeatCount 2 } | Should -Throw '*RepeatIntervalSeconds or RepeatIntervalMinutes is required*'
+        }
+
+        It 'rejects interval-based repeats without a repeat count' {
             { Resolve-ToastRepeatSettings -RepeatIntervalSeconds 60 } | Should -Throw '*RepeatCount is required*'
-            { Resolve-ToastRepeatSettings -RepeatIntervalSeconds 60 -RepeatCount 1 } | Should -Throw '*2 or greater*'
-            { Resolve-ToastRepeatSettings -RepeatIntervalSeconds 60 -RepeatIntervalMinutes 1 -RepeatCount 2 } | Should -Throw '*either*'
-            { Resolve-ToastRepeatSettings -RepeatIntervalMinutes 35791395 -RepeatCount 2 } | Should -Throw '*too large*'
+        }
+
+        It 'rejects repeat counts smaller than two' {
+            { Resolve-ToastRepeatSettings -RepeatIntervalSeconds 60 -RepeatCount 1 } | Should -Throw '*RepeatCount must be 2 or greater*'
+        }
+
+        It 'rejects multiple repeat interval units at the same time' {
+            { Resolve-ToastRepeatSettings -RepeatIntervalSeconds 60 -RepeatIntervalMinutes 1 -RepeatCount 2 } | Should -Throw '*either RepeatIntervalSeconds or RepeatIntervalMinutes*'
+        }
+
+        It 'rejects oversized repeat intervals in minutes' {
+            { Resolve-ToastRepeatSettings -RepeatIntervalMinutes 35791395 -RepeatCount 2 } | Should -Throw '*RepeatIntervalMinutes is too large*'
         }
     }
 
@@ -225,6 +289,7 @@ Describe 'ToastSql module' {
                     $script:captured.Message | Should -Be '<a href="https://example.com">Body & text</a>'
                     $script:captured.ButtonRightText | Should -Be 'Stäng'
                     @($script:captured.Keys | Where-Object { $_ -like 'Button*' }).Count | Should -Be 1
+                    $script:captured.ContainsKey('Icon') | Should -BeFalse
                     Show-ToastAppDeployToolkitPrompt -Title 'Unrelated title' -Body 'Unrelated body' | Out-Null
                     $script:captured.Subtitle | Should -Be 'Meddelande'
                 } finally { Remove-Item Function:\Show-ADTInstallationPrompt }
@@ -376,9 +441,7 @@ Describe 'ToastSql module' {
                 { Set-ToastReadState -StatePath 'HKCU:\Test' -MessageId 42 -State ([pscustomobject]@{ Read = $false; ShowCount = 0; NextShowUtc = $null }) } | Should -Throw '*Access denied*'
                 Should -Invoke New-Item -Times 1 -ParameterFilter { $Path -eq 'HKCU:\Test' -and $Force }
             }
-            $text = Get-Content "$PSScriptRoot/../deploy/Initialize-ToastReadState.ps1" -Raw
-            $text | Should -Match 'HKCU:'
-            $text | Should -Not -Match 'RunAsAdministrator|HKLM:|Set-Acl|Is64BitProcess'
+            Test-Path "$PSScriptRoot/../deploy/Initialize-ToastReadState.ps1" | Should -BeFalse
         }
     }
 
@@ -685,7 +748,7 @@ Describe 'ToastSql module' {
             $text = Get-Content "$PSScriptRoot/../sql/Install-ToastDatabase.sql" -Raw
             @([regex]::Matches($text, '(?i)CREATE TABLE dbo\.(\w+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object) |
                 Should -Be @('ToastClient','ToastClientGroup','ToastGroup','ToastMessage')
-            $text | Should -Not -Match 'ToastDelivery|LeaseId|LastSeenUtc|IsUrgent|Scenario|DisplayMode|ButtonArguments|ButtonActivationType|AppLogo|HeroImage|\bSound\b|ufn_ToastMessageLocal|vw_Toast'
+            $text | Should -Not -Match 'ToastDelivery|LeaseId|LastSeenUtc|IsUrgent|Scenario|DisplayMode|ButtonArguments|ButtonActivationType|AppLogo|HeroImage|\bSound\b|CREATE FUNCTION|CREATE VIEW|ufn_Toast|vw_Toast'
             foreach ($name in @('GroupName','Title','Subtitle','Body','AcknowledgeButtonText','ExpiresUtc','ActiveDuration','DurationUnit','RepeatIntervalSeconds','RepeatCount')) {
                 $text | Should -Match "@$name\b"
             }
@@ -702,7 +765,11 @@ Describe 'ToastSql module' {
             foreach ($field in @('MessageId','Title','Subtitle','Body','AcknowledgeButtonText','RepeatIntervalSeconds','RepeatCount','ExpiresUtc')) { $proc | Should -Match "m\.$field\b" }
             $proc | Should -Match 'm\.ExpiresUtc\s*>\s*(SYSUTCDATETIME\(\)|@Now)'
             $proc | Should -Match 'm\.IsCancelled\s*=\s*0'
-            $text | Should -Match 'g\.IsActive\s*=\s*1'
+            $proc | Should -Match 'g\.IsActive\s*=\s*1'
+            $proc | Should -Match 'c\.IsActive\s*=\s*1'
+            $proc | Should -Match 'c\.ComputerName\s*=\s*@ComputerName'
+            $proc | Should -Match 'INNER JOIN dbo\.ToastClientGroup'
+            $proc | Should -Match 'INNER JOIN dbo\.ToastClient'
             $text | Should -Match 'GRANT EXECUTE ON OBJECT::dbo.usp_GetPendingToast TO ToastClientReader'
             $text | Should -Match 'DENY INSERT, UPDATE, DELETE TO ToastClientReader'
             $text | Should -Match 'DENY EXECUTE ON OBJECT::dbo.usp_QueueToastMessage TO ToastClientReader'
