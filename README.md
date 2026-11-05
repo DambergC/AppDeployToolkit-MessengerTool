@@ -170,6 +170,8 @@ Exempel för samtliga varaktighetsenheter:
 
 Utelämna repetitionsparametrar för engångsvisning. Vid behov kan **antingen** `RepeatIntervalSeconds` **eller** `RepeatIntervalMinutes` kombineras med `RepeatCount` (minst 2, inklusive första kvitteringen). Nästa visning räknas från föregående lyckade kvittering. Repetitioner förlänger aldrig giltighetstiden.
 
+`Send-ToastMessage.ps1` kontrollerar som standard TCP-åtkomst till SQL-porten före köning. Ange `-CheckSqlPort:$false` för att hoppa över förkontrollen eller `-CheckSqlPort:$true` för att uttryckligen aktivera den. Detta är inte ICMP-ping. SQL-anslutning, autentisering, TLS-validering och ordinarie felhantering krävs även när förkontrollen är avstängd. Klienten och AD-importen ansluter redan direkt till SQL utan denna förkontroll.
+
 ## 5. Starta och verifiera klienten
 
 Provisionera först lässtatus på varje klientdator i **64-bitars PowerShell som administratör**, efter att klientkonfigurationen har färdigställts:
@@ -215,7 +217,7 @@ $root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
 & (Join-Path $root 'deploy\Initialize-ToastLogging.ps1') -ClientUserSid 'S-1-5-21-...'
 ```
 
-Klientloggar finns i `%ProgramData%\AppDeployToolkit-MessengerTool\Logs\Client\SYSTEM\Client.log` eller per användar-SID i `Client\Users\<SID>\Client.log`. Serverkommandon skriver till `Logs\Server\Server.log`. Loggarna är CMTrace-kompatibla, roteras vid 10 MB och behåller fem arkiv. SYSTEM- och serverloggar är skrivbara endast för SYSTEM och lokala administratörer; användarloggar är skrivbara för den provisionerade SID:n och administratörer. Provisionera om när ytterligare användare ska ha egen loggkatalog.
+Loggarnas rot är `C:\Windows\Temp\AppDeployToolkit-MessengerTool\Logs` (`%SystemRoot%\Temp\AppDeployToolkit-MessengerTool\Logs` om Windows ligger på annan plats). Klientloggar finns i `Client\SYSTEM\Client.log` eller per användar-SID i `Client\Users\<SID>\Client.log` under denna rot. Serverkommandon skriver till `Server\Server.log`. Loggarna är CMTrace-kompatibla, roteras vid 10 MB och behåller fem arkiv. SYSTEM- och serverloggar är skrivbara endast för SYSTEM och lokala administratörer; användarloggar är skrivbara för den provisionerade SID:n och administratörer. Provisionera om när ytterligare användare ska ha egen loggkatalog. Vid uppgradering, kör provisioneringen igen för den nya roten innan skripten startas; äldre loggar under `%ProgramData%` flyttas inte automatiskt. Temporära filer kan rensas av Windows eller städverktyg; provisionera om om katalogerna har tagits bort.
 
 Loggrader innehåller tidszon, nivå, komponent, process-ID, körnings-ID och vid behov MessageId; meddelandetext och anslutningsuppgifter loggas inte. Upprepade identiska fel sammanfattas högst var femte minut och återhämtning loggas direkt. Loggfel visas som varning och hindrar inte polling eller ändrar kvittensresultat. `-DebugLogging` aktiverar ytterligare klientdiagnostik; tomma pollningar loggas inte.
 

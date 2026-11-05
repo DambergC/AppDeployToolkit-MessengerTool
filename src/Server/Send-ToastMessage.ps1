@@ -11,7 +11,8 @@ param(
     [AllowNull()][AllowEmptyString()][string]$AcknowledgeButtonText = 'Stäng',
     [Nullable[int]]$RepeatIntervalSeconds,
     [Nullable[int]]$RepeatIntervalMinutes,
-    [Nullable[int]]$RepeatCount
+    [Nullable[int]]$RepeatCount,
+    [Parameter(HelpMessage='Enable or disable the SQL TCP port precheck; SQL authentication and TLS validation always apply.')][bool]$CheckSqlPort = $true
 )
 
 Set-StrictMode -Version Latest
@@ -31,7 +32,9 @@ $config = Import-ToastConfig -Path $ConfigPath -RequiredProperties @(
     'SqlServer','SqlDatabase','SqlPort','UseIntegratedSecurity','Encrypt',
     'TrustServerCertificate','ConnectTimeoutSeconds','CommandTimeoutSeconds'
 )
-Test-ToastSqlPort -Server $config.SqlServer -Port $config.SqlPort
+if ($CheckSqlPort) {
+    Test-ToastSqlPort -Server $config.SqlServer -Port $config.SqlPort
+}
 $conn = Get-ToastConnectionString $config
 $sqlCredential = Get-ToastSqlCredential $config
 

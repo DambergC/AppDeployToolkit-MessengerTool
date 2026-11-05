@@ -10,6 +10,22 @@ Describe 'ToastLogging module' {
             Remove-Item -Force
     }
 
+    It 'uses the Windows Temp root for all log paths' -Skip:([Environment]::OSVersion.Platform -ne 'Win32NT') {
+        $expectedRoot = Join-Path ([Environment]::GetFolderPath('Windows')) 'Temp\AppDeployToolkit-MessengerTool\Logs'
+        Get-ToastLogRoot | Should -Be $expectedRoot
+        Get-ToastServerLogPath | Should -Be (Join-Path $expectedRoot 'Server\Server.log')
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $clientDirectory = if ($identity.IsSystem) { 'SYSTEM' } else { "Users\$($identity.User.Value)" }
+        Get-ToastClientLogPath | Should -Be (Join-Path $expectedRoot "Client\$clientDirectory\Client.log")
+    }
+
+    It 'provisions the same shared root as the runtime logger' {
+        $provisioning = Get-Content (Join-Path $PSScriptRoot '../deploy/Initialize-ToastLogging.ps1') -Raw
+        $provisioning | Should -Match 'Import-Module "\$PSScriptRoot\\\.\.\\src\\Module\\ToastLogging\.psm1"'
+        $provisioning | Should -Match '\$root = Get-ToastLogRoot'
+        $provisioning | Should -Not -Match 'CommonApplicationData'
+    }
+
     It 'writes CMTrace-compatible entries with timezone, level, PID, run ID and MessageId' {
         Write-ToastLog -Path $script:TestLogPath -Level Info -Component 'Client' -RunId $script:TestRunId `
             -Message 'Dialog result: Acknowledge.' -MessageId 42
