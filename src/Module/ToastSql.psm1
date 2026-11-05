@@ -1,4 +1,5 @@
 ﻿Set-StrictMode -Version Latest
+Import-Module "$PSScriptRoot\ToastLogging.psm1"
 
 $script:ToastDependencyOptions = @{
     AppDeployToolkitModulePath = $null
@@ -635,6 +636,9 @@ function Invoke-ToastClientPass {
         [AllowNull()][System.Data.SqlClient.SqlCredential]$SqlCredential,
         [Parameter(Mandatory)][string]$ComputerName,
         [Parameter(Mandatory)][string]$StatePath,
+        [string]$LogPath,
+        [string]$RunId,
+        [switch]$DebugLogging,
         [int]$CommandTimeoutSeconds = 15
     )
     $mutex = New-ToastClientMutex -Name ('Global\ToastSql-' + ($StatePath -split '\\')[-1])
@@ -642,7 +646,11 @@ function Invoke-ToastClientPass {
     try {
         try { $ownsMutex = $mutex.WaitOne(0) }
         catch [System.Threading.AbandonedMutexException] { $ownsMutex = $true }
-        if ($ownsMutex) { Invoke-ToastClientPoll @PSBoundParameters }
+        if ($ownsMutex) {
+            Invoke-ToastClientPoll @PSBoundParameters
+            return $true
+        }
+        return $false
     } finally {
         if ($ownsMutex) { $mutex.ReleaseMutex() }
         $mutex.Dispose()
@@ -656,6 +664,9 @@ function Invoke-ToastClientPoll {
         [AllowNull()][System.Data.SqlClient.SqlCredential]$SqlCredential,
         [Parameter(Mandatory)][string]$ComputerName,
         [Parameter(Mandatory)][string]$StatePath,
+        [string]$LogPath,
+        [string]$RunId,
+        [switch]$DebugLogging,
         [int]$CommandTimeoutSeconds = 15
     )
     $sql = @{
@@ -665,35 +676,107 @@ function Invoke-ToastClientPoll {
         CommandTimeoutSeconds = $CommandTimeoutSeconds
     }
     # SQL returns every eligible message, so locally suppressed rows cannot fill a TOP (20) window.
-    $rows = Invoke-ToastSql @sql -Parameters @{ ComputerName = $ComputerName; MessageId = $null }
+    try {
+        $rows = Invoke-ToastSql @sql -Parameters @{ ComputerName = $ComputerName; MessageId = $null }
+    } catch {
+        if ($LogPath -and $RunId) {
+            Write-ToastLog -Path $LogPath -Level Error -Component 'Client' -RunId $RunId -ErrorKey 'SQL' `
+                -Message "SQL poll failed ($($_.Exception.GetType().Name))."
+        }
+        throw
+    }
+    $eligibleCount = if ($rows -is [System.Data.DataTable]) { $rows.Rows.Count } else { @($rows).Count }
+    if ($DebugLogging -and $eligibleCount -gt 0 -and $LogPath -and $RunId) {
+        Write-ToastLog -Path $LogPath -Level Debug -Component 'Client' -RunId $RunId -Message "Eligible messages returned: $eligibleCount."
+    }
     foreach ($row in $rows) {
-        $state = Get-ToastReadState -StatePath $StatePath -MessageId $row.MessageId
+        try {
+            $state = Get-ToastReadState -StatePath $StatePath -MessageId $row.MessageId
+        } catch {
+            if ($LogPath -and $RunId) {
+                Write-ToastLog -Path $LogPath -Level Error -Component 'Client' -RunId $RunId -ErrorKey 'RegistryRead' `
+                    -Message "Registry read failed ($($_.Exception.GetType().Name))." -MessageId $row.MessageId
+            }
+            throw
+        }
+        if ($LogPath -and $RunId) {
+            Clear-ToastLogError -Path $LogPath -Component 'Client' -RunId $RunId -ErrorKey 'RegistryRead'
+        }
         $repeatCount = Get-ToastObjectPropertyValue -InputObject $row -PropertyName 'RepeatCount'
         $limit = if ($null -eq $repeatCount) { 1 } else { [int]$repeatCount }
         if ($state.ShowCount -ge $limit -or ($null -ne $state.NextShowUtc -and $state.NextShowUtc -gt [datetime]::UtcNow)) { continue }
         # A previous blocking prompt may have outlived cancellation, membership, or expiry.
-        $current = Invoke-ToastSql @sql -Parameters @{ ComputerName = $ComputerName; MessageId = [long]$row.MessageId }
+        try {
+            $current = Invoke-ToastSql @sql -Parameters @{ ComputerName = $ComputerName; MessageId = [long]$row.MessageId }
+        } catch {
+            if ($LogPath -and $RunId) {
+                Write-ToastLog -Path $LogPath -Level Error -Component 'Client' -RunId $RunId -ErrorKey 'SQL' `
+                    -Message "SQL message refresh failed ($($_.Exception.GetType().Name))." -MessageId $row.MessageId
+            }
+            throw
+        }
         $currentRows = if ($current -is [System.Data.DataTable]) { @($current.Rows) } else { @($current | Where-Object { $null -ne $_ }) }
         if (@($currentRows).Count -eq 0) { continue }
         $row = @($currentRows)[0]
         # Check persistence before showing; a post-acknowledgement write error terminates polling rather than silently losing state.
-        Set-ToastReadState -StatePath $StatePath -MessageId $row.MessageId -State $state
+        try {
+            Set-ToastReadState -StatePath $StatePath -MessageId $row.MessageId -State $state
+        } catch {
+            if ($LogPath -and $RunId) {
+                Write-ToastLog -Path $LogPath -Level Error -Component 'Client' -RunId $RunId -ErrorKey 'RegistryWrite' `
+                    -Message "Registry write failed ($($_.Exception.GetType().Name))." -MessageId $row.MessageId
+            }
+            throw
+        }
+        if ($LogPath -and $RunId) {
+            Clear-ToastLogError -Path $LogPath -Component 'Client' -RunId $RunId -ErrorKey 'RegistryWrite'
+        }
         if (-not (Test-ToastRowUnexpired -ToastRow $row)) { continue }
+        if ($LogPath -and $RunId) {
+            Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId -Message 'Displaying message dialog.' -MessageId $row.MessageId
+        }
         try {
             $result = Invoke-ToastNotification -ToastRow $row
+            if ($LogPath -and $RunId) {
+                Clear-ToastLogError -Path $LogPath -Component 'Client' -RunId $RunId -ErrorKey 'Toolkit'
+            }
             if ($null -eq $result -or $result.ResultType -ne 'Acknowledge') {
-                Write-Warning "Message $($row.MessageId) was not acknowledged; it remains unread."
+                if ($LogPath -and $RunId) {
+                    Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId `
+                        -Message "Dialog result: $(if ($null -eq $result) { 'NoResult' } else { $result.ResultType }); message remains unread." `
+                        -MessageId $row.MessageId
+                }
                 continue
             }
         } catch {
+            if ($LogPath -and $RunId) {
+                Write-ToastLog -Path $LogPath -Level Error -Component 'Client' -RunId $RunId -ErrorKey 'Toolkit' `
+                    -Message "Toolkit display failed ($($_.Exception.GetType().Name)); message remains unread." -MessageId $row.MessageId
+            }
             Write-Warning "Message $($row.MessageId) remains unread: $($_.Exception.Message)"
             continue
+        }
+        if ($LogPath -and $RunId) {
+            Clear-ToastLogError -Path $LogPath -Component 'Client' -RunId $RunId -ErrorKey 'Toolkit'
+            Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId -Message 'Dialog result: Acknowledge.' -MessageId $row.MessageId
         }
         $state.Read = $true
         $state.ShowCount++
         $interval = Get-ToastObjectPropertyValue -InputObject $row -PropertyName 'RepeatIntervalSeconds'
         $state.NextShowUtc = if ($null -ne $interval -and $state.ShowCount -lt $limit) { [datetime]::UtcNow.AddSeconds([int]$interval) } else { $null }
-        Set-ToastReadState -StatePath $StatePath -MessageId $row.MessageId -State $state
+        try {
+            Set-ToastReadState -StatePath $StatePath -MessageId $row.MessageId -State $state
+        } catch {
+            if ($LogPath -and $RunId) {
+                Write-ToastLog -Path $LogPath -Level Error -Component 'Client' -RunId $RunId -ErrorKey 'RegistryWrite' `
+                    -Message "Acknowledgement state could not be persisted ($($_.Exception.GetType().Name))." -MessageId $row.MessageId
+            }
+            throw
+        }
+        if ($LogPath -and $RunId) {
+            Clear-ToastLogError -Path $LogPath -Component 'Client' -RunId $RunId -ErrorKey 'RegistryWrite'
+            Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId -Message 'Acknowledgement state persisted.' -MessageId $row.MessageId
+        }
     }
 }
 

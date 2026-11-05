@@ -202,6 +202,23 @@ Smoketest med ett nytt meddelande utan repetitioner:
 
 Klienten lagrar `Read`, `ShowCount` och `NextShowUtc` som JSON i strängvärden namngivna efter `MessageId` under `HKEY_LOCAL_MACHINE\Software\AppDeployToolkit-MessengerTool\ReadState\<hash>` i 64-bitarsregistret. Hashen avgränsas fortfarande av SQL-server/port, databas och datornamn, inte användar-SID. Alla användare på datorn delar kvittenser och repetitionsräknare i samma scope. En maskinomfattande mutex med begränsad åtkomst för interaktiva användare hindrar konkurrerande visningar över sessioner; en upptagen `-Once` kan avslutas utan visning. Klienten skapar inte nycklar och avbryter med instruktion om provisionering när scope saknas.
 
+### Lokal loggning
+
+Provisionera loggkataloger och ACL:er som administratör på varje klient och server innan skripten startas:
+
+```powershell
+$root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
+# På klienten i SYSTEM-läge, eller på servern:
+& (Join-Path $root 'deploy\Initialize-ToastLogging.ps1')
+
+# För användarläge på en klient: ange användarens SID vid provisioneringen.
+& (Join-Path $root 'deploy\Initialize-ToastLogging.ps1') -ClientUserSid 'S-1-5-21-...'
+```
+
+Klientloggar finns i `%ProgramData%\AppDeployToolkit-MessengerTool\Logs\Client\SYSTEM\Client.log` eller per användar-SID i `Client\Users\<SID>\Client.log`. Serverkommandon skriver till `Logs\Server\Server.log`. Loggarna är CMTrace-kompatibla, roteras vid 10 MB och behåller fem arkiv. SYSTEM- och serverloggar är skrivbara endast för SYSTEM och lokala administratörer; användarloggar är skrivbara för den provisionerade SID:n och administratörer. Provisionera om när ytterligare användare ska ha egen loggkatalog.
+
+Loggrader innehåller tidszon, nivå, komponent, process-ID, körnings-ID och vid behov MessageId; meddelandetext och anslutningsuppgifter loggas inte. Upprepade identiska fel sammanfattas högst var femte minut och återhämtning loggas direkt. Loggfel visas som varning och hindrar inte polling eller ändrar kvittensresultat. `-DebugLogging` aktiverar ytterligare klientdiagnostik; tomma pollningar loggas inte.
+
 Medlemskap, avbrott och giltighet kontrolleras igen innan nästa väntande meddelande visas. **En redan öppen dialog stängs inte automatiskt när giltighetstiden går ut.** Ingen lässtatus skickas tillbaka till SQL. Lokal status är inte ett manipulationsskyddat revisionsregister: alla interaktiva användare kan ändra den delade statusen, även för andra användare, eller orsaka stopp med ogiltiga värden. Borttagen maskinstatus kan göra att aktiva meddelanden visas igen; borttagen användarprofil återställer inte status. Äldre HKCU-status migreras inte och används inte längre, så aktiva meddelanden kan visas igen vid uppgradering. Återanvändning av meddelande-ID efter databasåterställning kräver separat hantering av lokal status.
 
 ### Schemalagd aktivitet som SYSTEM
@@ -253,6 +270,7 @@ Utan `-RunAsSystem` bevaras användarläget: aktiviteten använder interaktiv in
 | Inga meddelanden | Matchning mellan AD `Name` och `ClientName`, aktiv dator/grupp, medlemskap, UTC-giltighet, eventuell avbrytning och datorns delade kvittens/repetitionsstatus. Kontrollera andra aktiva klientsessioner. |
 | Dialogen kan inte visas | Aktiv användarsession, 64-bitars PowerShell, lokal ADT-sökväg samt läs-/köråtkomst till den medföljande modulen. SYSTEM kräver sessionsbryggan i PSAppDeployToolkit 4.1.8; en frånkopplad RDP-session räcker inte. |
 | Lässtatus saknas eller åtkomst nekas | Kör `deploy\Initialize-ToastReadState.ps1 -ConfigPath <klientkonfiguration>` som administratör i 64-bitars PowerShell på klientdatorn. Kontrollera den utskrivna HKLM-sökvägen; ge inte användare skrivåtkomst på överordnade nycklar. |
+| Logg saknas eller åtkomst nekas | Kör `deploy\Initialize-ToastLogging.ps1` som administratör. I användarläge, provisionera även användarens SID med `-ClientUserSid`; kontrollera att skriptet körs som SYSTEM, respektive administratör/serveridentitet för rätt logg. |
 | `SetValue`: `Cannot write to the registry key` trots provisionering | Uppdatera `src\Module\ToastSql.psm1`: skrivhandtaget måste öppnas med `RegistryKeyPermissionCheck.ReadWriteSubTree` och endast `RegistryRights.SetValue`. `Default` ger ett skrivskyddat .NET-handtag även när ACL tillåter skrivning. Utöka inte ACL och kör inte klienten som administratör. |
 | Meddelandet visas igen efter kvittering | Kontrollera fel vid skrivning till HKLM, ändrat SQL-/datorscope, borttagen maskinstatus eller aktiverade repetitioner. |
 
@@ -260,7 +278,7 @@ Repositoryts befintliga Pester-svit körs på en dator med Pester installerat:
 
 ```powershell
 $root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
-Invoke-Pester -Path (Join-Path $root 'tests\ToastSql.Tests.ps1')
+Invoke-Pester -Path (Join-Path $root 'tests')
 ```
 
 Testet med taggen `WindowsRegistry` skriver och uppdaterar status i en unik tillfällig HKLM-hashnyckel och tar sedan bort den. Det körs endast i eleverad 64-bitars PowerShell på Windows; övriga miljöer hoppar över det.

@@ -1,4 +1,5 @@
 ﻿BeforeAll {
+    Import-Module (Join-Path $PSScriptRoot '../src/Module/ToastLogging.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot '../src/Module/ToastSql.psm1') -Force
 }
 
@@ -854,6 +855,14 @@ Describe 'ToastSql module' {
             }
         }
 
+        It 'keeps acknowledgement state authoritative when local logging fails' {
+            InModuleScope ToastSql -Parameters @{ LogPath = (Join-Path $TestDrive 'missing\Client.log') } {
+                Invoke-ToastClientPoll @script:pollArgs -LogPath $LogPath -RunId 'test-run' -WarningAction SilentlyContinue
+                $script:localStates[42L].Read | Should -BeTrue
+                $script:localStates[42L].ShowCount | Should -Be 1
+            }
+        }
+
         It 'leaves render failures unread and continues with subsequent messages' {
             InModuleScope ToastSql {
                 $script:pollRows += [pscustomobject]@{ MessageId = 43; RepeatCount = $null; RepeatIntervalSeconds = $null; ExpiresUtc = [datetime]::UtcNow.AddDays(1) }
@@ -958,6 +967,9 @@ Describe 'ToastSql module' {
     Context 'sender SQL contract' {
         BeforeEach {
             Mock Import-Module {}
+            Mock New-ToastLogRunId { '0123456789abcdef0123456789abcdef' }
+            Mock Get-ToastServerLogPath { 'test.log' }
+            Mock Write-ToastLog {}
             Mock Import-ToastConfig { @{ SqlServer = 'sql01'; SqlPort = 1433; CommandTimeoutSeconds = 15 } }
             Mock Test-ToastSqlPort {}
             Mock Get-ToastConnectionString { 'test' }
@@ -999,18 +1011,27 @@ Describe 'ToastSql module' {
             Mock Get-ADObject { [pscustomobject]@{ ObjectClass = 'organizationalUnit' } }
             Mock Get-ADGroupMember {}
             Mock Get-ADComputer { [pscustomobject]@{ Name = 'PC01' }; [pscustomobject]@{ Name = 'PC01' }; [pscustomobject]@{ Name = "PC'02" } }
+            Mock New-ToastLogRunId { '0123456789abcdef0123456789abcdef' }
+            Mock Get-ToastServerLogPath { 'test.log' }
+            Mock Write-ToastLog {}
             Mock Import-ToastConfig { @{ CommandTimeoutSeconds = 15 } }
             Mock Get-ToastConnectionString { 'test' }
             Mock Get-ToastSqlCredential { $null }
-            Mock Invoke-ToastSql {}
+            Mock Invoke-ToastSql {
+                $table = [System.Data.DataTable]::new()
+                [void]$table.Columns.Add('Changes', [int])
+                [void]$table.Rows.Add(1)
+                Write-Output -NoEnumerate $table
+            }
         }
         It 'uses OU and AD filter and parameterized idempotent membership inserts' {
             $result = & "$PSScriptRoot/../src/Server/Import-ToastADComputers.ps1" -ConfigPath admin.psd1 -Tag ' IT ' -SearchBase 'OU=PC,DC=test' -Filter 'Enabled -eq $true'
             $result.Count | Should -Be 2
             Should -Invoke Get-ADComputer -Times 1 -ParameterFilter { $Filter -eq 'Enabled -eq $true' -and $SearchBase -eq 'OU=PC,DC=test' }
             Should -Invoke Invoke-ToastSql -Times 2 -ParameterFilter {
-                $NonQuery -and $Parameters.GroupName -eq 'IT' -and $CommandText -match 'UPDLOCK, HOLDLOCK' -and
-                $CommandText -match 'BEGIN TRAN' -and $CommandText -notmatch "PC'02" -and $CommandText -notmatch 'ToastDelivery'
+                -not $NonQuery -and $Parameters.GroupName -eq 'IT' -and $CommandText -match 'UPDLOCK, HOLDLOCK' -and
+                $CommandText -match 'BEGIN TRAN' -and $CommandText -match 'SELECT @Changes AS Changes' -and
+                $CommandText -notmatch "PC'02" -and $CommandText -notmatch 'ToastDelivery'
             }
         }
         It 'supports WhatIf without database writes' {
