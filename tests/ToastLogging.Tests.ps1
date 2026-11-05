@@ -11,19 +11,30 @@ Describe 'ToastLogging module' {
     }
 
     It 'uses the Windows Temp root for all log paths' -Skip:([Environment]::OSVersion.Platform -ne 'Win32NT') {
-        $expectedRoot = Join-Path ([Environment]::GetFolderPath('Windows')) 'Temp\AppDeployToolkit-MessengerTool\Logs'
+        $expectedRoot = Join-Path ([Environment]::GetFolderPath('Windows')) 'Temp'
         Get-ToastLogRoot | Should -Be $expectedRoot
-        Get-ToastServerLogPath | Should -Be (Join-Path $expectedRoot 'Server\Server.log')
+        Get-ToastServerLogPath | Should -Be (Join-Path $expectedRoot 'AppDeployToolkit-MessengerTool-Server.log')
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        $clientDirectory = if ($identity.IsSystem) { 'SYSTEM' } else { "Users\$($identity.User.Value)" }
-        Get-ToastClientLogPath | Should -Be (Join-Path $expectedRoot "Client\$clientDirectory\Client.log")
+        $suffix = if ($identity.IsSystem) { 'SYSTEM' } else { $identity.User.Value }
+        Get-ToastClientLogPath | Should -Be (Join-Path $expectedRoot "AppDeployToolkit-MessengerTool-Client-$suffix.log")
     }
 
-    It 'provisions the same shared root as the runtime logger' {
+    It 'uses the shared root without provisioning directories or changing permissions' {
         $provisioning = Get-Content (Join-Path $PSScriptRoot '../deploy/Initialize-ToastLogging.ps1') -Raw
         $provisioning | Should -Match 'Import-Module "\$PSScriptRoot\\\.\.\\src\\Module\\ToastLogging\.psm1"'
         $provisioning | Should -Match '\$root = Get-ToastLogRoot'
         $provisioning | Should -Not -Match 'CommonApplicationData'
+        $provisioning | Should -Not -Match 'Set-Acl|SetAccessRule|SetOwner|CreateDirectory|New-Item|RunAsAdministrator'
+        $logger = Get-Content (Join-Path $PSScriptRoot '../src/Module/ToastLogging.psm1') -Raw
+        $logger | Should -Not -Match 'Set-Acl|SetAccessRule|SetOwner|FileSecurity|DirectorySecurity|CreateDirectory'
+    }
+
+    It 'creates the log and lock directly in an existing directory without pre-provisioned files' {
+        Test-Path -LiteralPath $script:TestLogPath | Should -BeFalse
+        Write-ToastLog -Path $script:TestLogPath -Level Info -Component Server -RunId $script:TestRunId -Message 'Started.' -WarningAction Stop
+        Test-Path -LiteralPath $script:TestLogPath -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath "$script:TestLogPath.lock" -PathType Leaf | Should -BeTrue
+        @(Get-ChildItem -LiteralPath $TestDrive -Directory).Count | Should -Be 0
     }
 
     It 'writes CMTrace-compatible entries with timezone, level, PID, run ID and MessageId' {
