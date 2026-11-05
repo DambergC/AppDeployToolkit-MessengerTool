@@ -985,6 +985,29 @@ Describe 'ToastSql module' {
                 $null -eq $Parameters.ActiveDuration -and $null -eq $Parameters.DurationUnit -and
                 $Parameters.Subtitle -eq 'Subtitle' -and $CommandText -notmatch 'Urgent|Scenario|DisplayMode|ButtonArguments'
             }
+            Should -Invoke Test-ToastSqlPort -Times 1 -Exactly -ParameterFilter { $Server -eq 'sql01' -and $Port -eq 1433 }
+        }
+
+        It 'skips only the TCP precheck when disabled and still queues through SQL' {
+            & "$PSScriptRoot/../src/Server/Send-ToastMessage.ps1" -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours -CheckSqlPort:$false | Should -Match 'Queued message 42'
+            Should -Invoke Test-ToastSqlPort -Times 0
+            Should -Invoke Get-ToastConnectionString -Times 1 -Exactly
+            Should -Invoke Get-ToastSqlCredential -Times 1 -Exactly
+            Should -Invoke Invoke-ToastSql -Times 1 -Exactly
+        }
+
+        It 'enables the TCP precheck explicitly and stops before SQL on failure' {
+            Mock Test-ToastSqlPort { throw 'TCP precheck failed' }
+            { & "$PSScriptRoot/../src/Server/Send-ToastMessage.ps1" -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours -CheckSqlPort:$true } | Should -Throw '*TCP precheck failed*'
+            Should -Invoke Test-ToastSqlPort -Times 1 -Exactly
+            Should -Invoke Invoke-ToastSql -Times 0
+        }
+
+        It 'surfaces SQL failures even when the TCP precheck is disabled' {
+            Mock Invoke-ToastSql { throw 'SQL authentication or TLS failed' }
+            { & "$PSScriptRoot/../src/Server/Send-ToastMessage.ps1" -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours -CheckSqlPort:$false } | Should -Throw '*SQL authentication or TLS failed*'
+            Should -Invoke Test-ToastSqlPort -Times 0
+            Should -Invoke Write-ToastLog -Times 0 -ParameterFilter { $Message -eq 'Message queued successfully.' }
         }
 
         It 'passes duration calculation to SQL and preserves custom label and repeats' {

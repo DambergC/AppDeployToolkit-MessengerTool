@@ -12,7 +12,7 @@ function New-ToastLogRunId {
 function Get-ToastLogRoot {
     [CmdletBinding()]
     param()
-    return Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'AppDeployToolkit-MessengerTool\Logs'
+    return Join-Path ([Environment]::GetFolderPath('Windows')) 'Temp\AppDeployToolkit-MessengerTool\Logs'
 }
 
 function Get-ToastClientLogPath {

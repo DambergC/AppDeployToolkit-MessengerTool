@@ -7,7 +7,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$root = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'AppDeployToolkit-MessengerTool\Logs'
+Import-Module "$PSScriptRoot\..\src\Module\ToastLogging.psm1"
+$root = Get-ToastLogRoot
 $systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $adminsSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $authenticatedUsersSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-11')
