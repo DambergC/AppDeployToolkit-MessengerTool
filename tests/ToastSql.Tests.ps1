@@ -633,12 +633,45 @@ Describe 'ToastSql module' {
             }
         }
 
-        It 'uses the 64-bit registry view and requests only SetValue for writes' {
+        It 'opens a writable handle in the 64-bit registry view with only SetValue rights' {
             InModuleScope ToastSql {
                 $source = (Get-Command Write-ToastReadStateValue).Definition
                 $source | Should -Match '\[Microsoft.Win32.RegistryView\]::Registry64'
-                $source | Should -Match 'OpenSubKey\(\$StatePath.Substring\(6\), \[Microsoft.Win32.RegistryKeyPermissionCheck\]::Default, \[System.Security.AccessControl.RegistryRights\]::SetValue\)'
+                $source | Should -Match 'OpenSubKey\(\$StatePath.Substring\(6\), \[Microsoft.Win32.RegistryKeyPermissionCheck\]::ReadWriteSubTree, \[System.Security.AccessControl.RegistryRights\]::SetValue\)'
                 $source | Should -Not -Match 'CreateSubKey\('
+            }
+        }
+
+        It 'persists and updates values through a real SetValue-only registry handle' -Tag 'WindowsRegistry' -Skip:(
+            [Environment]::OSVersion.Platform -ne 'Win32NT' -or
+            -not [Environment]::Is64BitProcess -or
+            -not ([System.Security.Principal.WindowsPrincipal]::new(
+                [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            )).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+        ) {
+            InModuleScope ToastSql {
+                $statePath = Get-ToastReadStatePath -Server 'registry-test' -Port 1433 -Database 'test' -ComputerName ([guid]::NewGuid().ToString('N'))
+                $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+                $key = $null
+                try {
+                    $key = $baseKey.CreateSubKey($statePath.Substring(6))
+                    $key.Dispose()
+                    $key = $null
+                    foreach ($read in @($false, $true)) {
+                        $next = [datetime]::UtcNow.AddMinutes(5)
+                        Set-ToastReadState -StatePath $statePath -MessageId 42 -State ([pscustomobject]@{ Read = $read; ShowCount = 2; NextShowUtc = $next })
+                        $state = Get-ToastReadState -StatePath $statePath -MessageId 42
+                        $state.Read | Should -Be $read
+                        $state.ShowCount | Should -Be 2
+                        $state.NextShowUtc | Should -Be $next
+                    }
+                    $key = $baseKey.OpenSubKey($statePath.Substring(6))
+                    $key.GetValueKind('42') | Should -Be ([Microsoft.Win32.RegistryValueKind]::String)
+                } finally {
+                    if ($null -ne $key) { $key.Dispose() }
+                    try { $baseKey.DeleteSubKey($statePath.Substring(6), $false) }
+                    finally { $baseKey.Dispose() }
+                }
             }
         }
     }

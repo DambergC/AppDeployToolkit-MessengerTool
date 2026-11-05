@@ -253,6 +253,7 @@ Utan `-RunAsSystem` bevaras användarläget: aktiviteten använder interaktiv in
 | Inga meddelanden | Matchning mellan AD `Name` och `ClientName`, aktiv dator/grupp, medlemskap, UTC-giltighet, eventuell avbrytning och datorns delade kvittens/repetitionsstatus. Kontrollera andra aktiva klientsessioner. |
 | Dialogen kan inte visas | Aktiv användarsession, 64-bitars PowerShell, lokal ADT-sökväg samt läs-/köråtkomst till den medföljande modulen. SYSTEM kräver sessionsbryggan i PSAppDeployToolkit 4.1.8; en frånkopplad RDP-session räcker inte. |
 | Lässtatus saknas eller åtkomst nekas | Kör `deploy\Initialize-ToastReadState.ps1 -ConfigPath <klientkonfiguration>` som administratör i 64-bitars PowerShell på klientdatorn. Kontrollera den utskrivna HKLM-sökvägen; ge inte användare skrivåtkomst på överordnade nycklar. |
+| `SetValue`: `Cannot write to the registry key` trots provisionering | Uppdatera `src\Module\ToastSql.psm1`: skrivhandtaget måste öppnas med `RegistryKeyPermissionCheck.ReadWriteSubTree` och endast `RegistryRights.SetValue`. `Default` ger ett skrivskyddat .NET-handtag även när ACL tillåter skrivning. Utöka inte ACL och kör inte klienten som administratör. |
 | Meddelandet visas igen efter kvittering | Kontrollera fel vid skrivning till HKLM, ändrat SQL-/datorscope, borttagen maskinstatus eller aktiverade repetitioner. |
 
 Repositoryts befintliga Pester-svit körs på en dator med Pester installerat:
@@ -261,5 +262,7 @@ Repositoryts befintliga Pester-svit körs på en dator med Pester installerat:
 $root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
 Invoke-Pester -Path (Join-Path $root 'tests\ToastSql.Tests.ps1')
 ```
+
+Testet med taggen `WindowsRegistry` skriver och uppdaterar status i en unik tillfällig HKLM-hashnyckel och tar sedan bort den. Det körs endast i eleverad 64-bitars PowerShell på Windows; övriga miljöer hoppar över det.
 
 Mockade tester ersätter inte integrationstest mot verklig SQL Server, AD, TLS och en interaktiv Windows-session. Verifiera installation, SQL-roller och smoketest i målmiljön före utrullning.
