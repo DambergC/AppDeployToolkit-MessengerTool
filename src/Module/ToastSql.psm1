@@ -572,8 +572,8 @@ function Write-ToastReadStateValue {
     $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
     $key = $null
     try {
-        # The registry provider requests CreateSubKey for writes; open with only SetValue instead.
-        $key = $baseKey.OpenSubKey($StatePath.Substring(6), [Microsoft.Win32.RegistryKeyPermissionCheck]::Default, [System.Security.AccessControl.RegistryRights]::SetValue)
+        # ReadWriteSubTree makes the handle writable; explicit SetValue rights avoid CreateSubKey access.
+        $key = $baseKey.OpenSubKey($StatePath.Substring(6), [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]::SetValue)
         if ($null -eq $key) { throw "Read-state scope '$StatePath' is not provisioned." }
         $key.SetValue($Name, $Value, [Microsoft.Win32.RegistryValueKind]::String)
     } finally {
