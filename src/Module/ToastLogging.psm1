@@ -12,23 +12,21 @@ function New-ToastLogRunId {
 function Get-ToastLogRoot {
     [CmdletBinding()]
     param()
-    return Join-Path ([Environment]::GetFolderPath('Windows')) 'Temp\AppDeployToolkit-MessengerTool\Logs'
+    return Join-Path ([Environment]::GetFolderPath('Windows')) 'Temp'
 }
 
 function Get-ToastClientLogPath {
     [CmdletBinding()]
     param()
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-    if ($identity.IsSystem) {
-        return Join-Path (Get-ToastLogRoot) 'Client\SYSTEM\Client.log'
-    }
-    return Join-Path (Get-ToastLogRoot) "Client\Users\$($identity.User.Value)\Client.log"
+    $suffix = if ($identity.IsSystem) { 'SYSTEM' } else { $identity.User.Value }
+    return Join-Path (Get-ToastLogRoot) "AppDeployToolkit-MessengerTool-Client-$suffix.log"
 }
 
 function Get-ToastServerLogPath {
     [CmdletBinding()]
     param()
-    return Join-Path (Get-ToastLogRoot) 'Server\Server.log'
+    return Join-Path (Get-ToastLogRoot) 'AppDeployToolkit-MessengerTool-Server.log'
 }
 
 function Write-ToastLogLine {

@@ -206,18 +206,15 @@ Klienten lagrar `Read`, `ShowCount` och `NextShowUtc` som JSON i strängvärden 
 
 ### Lokal loggning
 
-Provisionera loggkataloger och ACL:er som administratör på varje klient och server innan skripten startas:
+Loggfilerna skapas automatiskt **direkt i `C:\Windows\Temp`**, utan underkataloger (`%SystemRoot%\Temp` om Windows ligger på annan plats):
 
-```powershell
-$root = 'C:\Program Files\AppDeployToolkit-MessengerTool'
-# På klienten i SYSTEM-läge, eller på servern:
-& (Join-Path $root 'deploy\Initialize-ToastLogging.ps1')
+- Server: `AppDeployToolkit-MessengerTool-Server.log`
+- SYSTEM-klient: `AppDeployToolkit-MessengerTool-Client-SYSTEM.log`
+- Användarklient: `AppDeployToolkit-MessengerTool-Client-<SID>.log`
 
-# För användarläge på en klient: ange användarens SID vid provisioneringen.
-& (Join-Path $root 'deploy\Initialize-ToastLogging.ps1') -ClientUserSid 'S-1-5-21-...'
-```
+Inga katalog- eller filrättigheter ändras och inget extra filskydd läggs till. Befintliga Windows-rättigheter och processens identitet avgör åtkomsten; separata filnamn är inte en säkerhetsgräns. Ingen loggprovisionering behövs. Det uppdaterade `deploy\Initialize-ToastLogging.ps1` kontrollerar endast att Temp-katalogen finns och skriver ut sökvägen; den tidigare parametern `ClientUserSid` accepteras med en varning men ändrar ingenting.
 
-Loggarnas rot är `C:\Windows\Temp\AppDeployToolkit-MessengerTool\Logs` (`%SystemRoot%\Temp\AppDeployToolkit-MessengerTool\Logs` om Windows ligger på annan plats). Klientloggar finns i `Client\SYSTEM\Client.log` eller per användar-SID i `Client\Users\<SID>\Client.log` under denna rot. Serverkommandon skriver till `Server\Server.log`. Loggarna är CMTrace-kompatibla, roteras vid 10 MB och behåller fem arkiv. SYSTEM- och serverloggar är skrivbara endast för SYSTEM och lokala administratörer; användarloggar är skrivbara för den provisionerade SID:n och administratörer. Provisionera om när ytterligare användare ska ha egen loggkatalog. Vid uppgradering, kör provisioneringen igen för den nya roten innan skripten startas; äldre loggar under `%ProgramData%` flyttas inte automatiskt. Temporära filer kan rensas av Windows eller städverktyg; provisionera om om katalogerna har tagits bort.
+Loggarna är CMTrace-kompatibla, roteras vid 10 MB och behåller fem arkiv. Låsfiler (`.log.lock`) och arkiv (`.log.1` till `.log.5`) ligger också direkt i Temp. Vid uppgradering: distribuera även det uppdaterade installationsskriptet och starta om klient-/serverprocesserna. Äldre loggar och rättigheter migreras eller återställs inte automatiskt. Windows eller städverktyg kan rensa temporära loggar; nya loggfiler skapas vid nästa skrivning.
 
 Loggrader innehåller tidszon, nivå, komponent, process-ID, körnings-ID och vid behov MessageId; meddelandetext och anslutningsuppgifter loggas inte. Upprepade identiska fel sammanfattas högst var femte minut och återhämtning loggas direkt. Loggfel visas som varning och hindrar inte polling eller ändrar kvittensresultat. `-DebugLogging` aktiverar ytterligare klientdiagnostik; tomma pollningar loggas inte.
 
@@ -272,7 +269,7 @@ Utan `-RunAsSystem` bevaras användarläget: aktiviteten använder interaktiv in
 | Inga meddelanden | Matchning mellan AD `Name` och `ClientName`, aktiv dator/grupp, medlemskap, UTC-giltighet, eventuell avbrytning och datorns delade kvittens/repetitionsstatus. Kontrollera andra aktiva klientsessioner. |
 | Dialogen kan inte visas | Aktiv användarsession, 64-bitars PowerShell, lokal ADT-sökväg samt läs-/köråtkomst till den medföljande modulen. SYSTEM kräver sessionsbryggan i PSAppDeployToolkit 4.1.8; en frånkopplad RDP-session räcker inte. |
 | Lässtatus saknas eller åtkomst nekas | Kör `deploy\Initialize-ToastReadState.ps1 -ConfigPath <klientkonfiguration>` som administratör i 64-bitars PowerShell på klientdatorn. Kontrollera den utskrivna HKLM-sökvägen; ge inte användare skrivåtkomst på överordnade nycklar. |
-| Logg saknas eller åtkomst nekas | Kör `deploy\Initialize-ToastLogging.ps1` som administratör. I användarläge, provisionera även användarens SID med `-ClientUserSid`; kontrollera att skriptet körs som SYSTEM, respektive administratör/serveridentitet för rätt logg. |
+| Logg saknas eller åtkomst nekas | Kontrollera processens befintliga skrivrättigheter till `%SystemRoot%\Temp` och aktuell loggfil samt eventuella fillås. Skripten ändrar inga rättigheter. Loggfilen skapas automatiskt direkt i Temp; `deploy\Initialize-ToastLogging.ps1` kontrollerar endast katalogens existens. |
 | `SetValue`: `Cannot write to the registry key` trots provisionering | Uppdatera `src\Module\ToastSql.psm1`: skrivhandtaget måste öppnas med `RegistryKeyPermissionCheck.ReadWriteSubTree` och endast `RegistryRights.SetValue`. `Default` ger ett skrivskyddat .NET-handtag även när ACL tillåter skrivning. Utöka inte ACL och kör inte klienten som administratör. |
 | Meddelandet visas igen efter kvittering | Kontrollera fel vid skrivning till HKLM, ändrat SQL-/datorscope, borttagen maskinstatus eller aktiverade repetitioner. |
 
