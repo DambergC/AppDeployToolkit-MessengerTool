@@ -15,6 +15,13 @@ param(
 )
 
 Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module "$PSScriptRoot\..\Module\ToastLogging.psm1" -Force
+$runId = New-ToastLogRunId
+$logPath = Get-ToastServerLogPath
+$component = 'Server'
+Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message 'Message queue operation started.'
+try {
 Import-Module "$PSScriptRoot\..\Module\ToastSql.psm1" -Force
 
 $expirySettings = Resolve-ToastExpirySettings -ExpiresUtc $ExpiresUtc -ActiveDuration $ActiveDuration -DurationUnit $DurationUnit
@@ -56,4 +63,13 @@ EXEC dbo.usp_QueueToastMessage
 $result = Invoke-ToastSql -ConnectionString $conn -SqlCredential $sqlCredential `
     -CommandText $sql -Parameters $params -CommandTimeoutSeconds $config.CommandTimeoutSeconds
 $queuedResult = Resolve-ToastQueueResult -Result $result
+Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId `
+    -Message 'Message queued successfully.' -MessageId $queuedResult.MessageId
 Write-Output "Queued message $($queuedResult.MessageId) for group '$GroupName'."
+} catch {
+    Write-ToastLog -Path $logPath -Level Error -Component $component -RunId $runId -ErrorKey 'Queue' `
+        -Message "Message queue operation failed ($($_.Exception.GetType().Name))."
+    throw
+} finally {
+    Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message 'Message queue operation finished.'
+}
