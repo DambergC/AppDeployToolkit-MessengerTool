@@ -16,6 +16,7 @@ if (-not (Test-Path -LiteralPath $statePath)) {
 }
 
 # Protect only this scope; users cannot create keys, delete state, or change permissions.
+# Trade-off: all interactive users (S-1-5-4) can write values, so one user could alter another's read/repeat state on a shared machine.
 $acl = [System.Security.AccessControl.RegistrySecurity]::new()
 $acl.SetAccessRuleProtection($true, $false)
 $acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))

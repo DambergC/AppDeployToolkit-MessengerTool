@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory)][string]$ConfigPath,
     [switch]$RunAsSystem
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 foreach ($path in @($ScriptPath, $ConfigPath)) {
     if (-not [System.IO.Path]::IsPathRooted($path) -or $path.Contains('"') -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
