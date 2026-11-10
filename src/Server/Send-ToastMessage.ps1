@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$ConfigPath,
-    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$GroupName,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][ValidateLength(1,128)][string]$GroupName,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Title,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Body,
     [AllowNull()][AllowEmptyString()][string]$Subtitle,

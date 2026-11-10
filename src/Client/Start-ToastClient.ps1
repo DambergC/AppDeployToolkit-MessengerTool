@@ -23,13 +23,12 @@ if (-not [Environment]::Is64BitProcess) {
 }
 Import-Module "$PSScriptRoot\..\Module\ToastSql.psm1" -Force
 $config = Import-ToastConfig -Path $ConfigPath -RequiredProperties @('SqlServer','SqlDatabase','SqlPort','UseIntegratedSecurity','ClientName','AppDeployToolkitModulePath','Encrypt','TrustServerCertificate','ConnectTimeoutSeconds','CommandTimeoutSeconds') -NullableProperties @('ClientName','AppDeployToolkitModulePath') -ResolveClientName
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-if (-not $user.IsSystem -and -not [Environment]::UserInteractive) {
+if (-not $identity.IsSystem -and -not [Environment]::UserInteractive) {
     throw 'Run the client as SYSTEM or in an interactive user session.'
 }
 Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message "Execution mode confirmed; mode=$mode."
 try {
-    Set-ToastClientDependencyOptions -AppDeployToolkitModulePath $config.AppDeployToolkitModulePath -RunAsSystem:$user.IsSystem
+    Set-ToastClientDependencyOptions -AppDeployToolkitModulePath $config.AppDeployToolkitModulePath -RunAsSystem:$identity.IsSystem
 } catch {
     Write-ToastLog -Path $logPath -Level Error -Component $component -RunId $runId -ErrorKey 'Toolkit' `
         -Message "Toolkit initialization failed ($($_.Exception.GetType().Name))."
@@ -37,6 +36,7 @@ try {
 }
 $conn = Get-ToastConnectionString $config
 $sqlCredential = Get-ToastSqlCredential $config
+$failureCount = 0
 $statePath = Get-ToastReadStatePath -Server $config.SqlServer -Port $config.SqlPort -Database $config.SqlDatabase -ComputerName $config.ClientName
 Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message "Read-state scope=$($statePath.Split('\')[-1])."
 if (-not (Test-Path -LiteralPath $statePath -ErrorAction Stop)) {
@@ -46,15 +46,19 @@ do {
     try {
         $passCompleted = Invoke-ToastClientPass -ConnectionString $conn -SqlCredential $sqlCredential -ComputerName $config.ClientName -StatePath $statePath -CommandTimeoutSeconds $config.CommandTimeoutSeconds -LogPath $logPath -RunId $runId -DebugLogging:$DebugLogging
         if ($passCompleted) {
+            $failureCount = 0
             Clear-ToastLogError -Path $logPath -Component $component -RunId $runId -ErrorKey 'SQL'
             Clear-ToastLogError -Path $logPath -Component $component -RunId $runId -ErrorKey 'ClientLoop'
         }
     } catch {
         Write-ToastLog -Path $logPath -Level Error -Component $component -RunId $runId -ErrorKey 'ClientLoop' -Message "Client pass failed ($($_.Exception.GetType().Name))."
+        $failureCount++
         if ($Once) { throw }
     }
     if ($Once) { break }
-    Start-Sleep -Seconds $PollSeconds
+    # Back off after failures (capped at 10x) and add jitter so clients do not poll SQL in lockstep.
+    $delay = $PollSeconds * [math]::Min(10, [math]::Pow(2, [math]::Min($failureCount, 4)))
+    Start-Sleep -Seconds ([math]::Ceiling($delay + (Get-Random -Minimum 0 -Maximum ([math]::Max(1, $PollSeconds / 10)))))
 } while ($true)
 } catch {
     Write-ToastLog -Path $logPath -Level Error -Component $component -RunId $runId -ErrorKey 'Startup' -Message "Client stopped after an error ($($_.Exception.GetType().Name))."

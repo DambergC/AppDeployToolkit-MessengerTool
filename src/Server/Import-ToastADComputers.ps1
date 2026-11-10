@@ -43,6 +43,7 @@ else {
     $computers = @(Get-ADComputer @adParameters | Select-Object -ExpandProperty Name -Unique)
 }
 $computerCount = $computers.Count
+if ($computerCount -eq 0) { Write-Warning 'The AD selection returned no computers; nothing to import.' }
 Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message "AD selection completed; computers=$computerCount."
 
 # Name matches the default client hostname (not DNSHostName). Validate the whole selection before writing.
