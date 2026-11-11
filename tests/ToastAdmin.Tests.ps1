@@ -54,7 +54,7 @@ Describe 'ToastAdmin GUI functions' {
         }
 
         It 'preserves sender validation and propagates SQL failures to GUI callers' {
-            { Send-ToastMessage -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body } | Should -Throw '*exactly one*'
+            { Send-ToastMessage -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours } | Should -Throw '*exactly one*'
             Should -Invoke Invoke-ToastSql -Times 0
             Mock Invoke-ToastSql { throw 'SQL unavailable' }
             { Send-ToastMessage -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours } | Should -Throw '*SQL unavailable*'
@@ -64,8 +64,14 @@ Describe 'ToastAdmin GUI functions' {
         It 'returns recursive AD computer imports as objects and forwards SearchBase and Tag' {
             Mock Invoke-ToastSql {
                 $table = [System.Data.DataTable]::new()
-                [void]$table.Columns.Add('Changes', [int])
-                [void]$table.Rows.Add(1)
+                if ($CommandText -like '*SELECT c.ComputerName*') {
+                    [void]$table.Columns.Add('ComputerName', [string])
+                    [void]$table.Rows.Add('PC01')
+                }
+                else {
+                    [void]$table.Columns.Add('Changes', [int])
+                    [void]$table.Rows.Add(1)
+                }
                 Write-Output -NoEnumerate $table
             }
             $result = @(Import-ToastADComputers -ConfigPath admin.psd1 -Tag ' IT ' -SearchBase 'CN=Pilot,DC=test' -Confirm:$false)
@@ -74,15 +80,49 @@ Describe 'ToastAdmin GUI functions' {
             $result[0].Tag | Should -Be 'IT'
             Should -Invoke Get-ADGroupMember -Times 1 -Exactly -ParameterFilter { $Recursive -and $Identity -eq 'CN=Pilot,DC=test' }
             Should -Invoke Get-ADComputer -Times 0
+            Should -Invoke Invoke-ToastSql -Times 2 -Exactly -ParameterFilter {
+                $Parameters.GroupName -eq 'IT' -and ($Parameters.ComputerName -eq 'PC01' -or $null -eq $Parameters.ComputerName)
+            }
+        }
+
+        It 'removes tag memberships for computers no longer in the AD group' {
+            Mock Invoke-ToastSql {
+                $table = [System.Data.DataTable]::new()
+                if ($CommandText -like '*SELECT c.ComputerName*') {
+                    [void]$table.Columns.Add('ComputerName', [string])
+                    [void]$table.Rows.Add('PC01')
+                    [void]$table.Rows.Add('PC02')
+                }
+                else {
+                    [void]$table.Columns.Add('Changes', [int])
+                    [void]$table.Rows.Add(1)
+                }
+                Write-Output -NoEnumerate $table
+            }
+            $result = @(Import-ToastADComputers -ConfigPath admin.psd1 -Tag IT -SearchBase 'CN=Pilot,DC=test' -Confirm:$false)
+            $result.Count | Should -Be 1
             Should -Invoke Invoke-ToastSql -Times 1 -Exactly -ParameterFilter {
-                $Parameters.GroupName -eq 'IT' -and $Parameters.ComputerName -eq 'PC01'
+                $CommandText -like '*DELETE cg*' -and $Parameters.ComputerName -eq 'PC02' -and $Parameters.GroupName -eq 'IT'
+            }
+            Should -Invoke Invoke-ToastSql -Times 0 -Exactly -ParameterFilter {
+                $CommandText -like '*DELETE cg*' -and $Parameters.ComputerName -eq 'PC01'
             }
         }
 
         It 'forwards import WhatIf without writing SQL' {
+            Mock Invoke-ToastSql {
+                $table = [System.Data.DataTable]::new()
+                [void]$table.Columns.Add('ComputerName', [string])
+                [void]$table.Rows.Add('PC01')
+                [void]$table.Rows.Add('PC02')
+                Write-Output -NoEnumerate $table
+            }
             @(Import-ToastADComputers -ConfigPath admin.psd1 -Tag IT -SearchBase 'CN=Pilot,DC=test' -WhatIf).Count | Should -Be 0
             Should -Invoke Get-ADGroupMember -Times 1 -Exactly
-            Should -Invoke Invoke-ToastSql -Times 0
+            Should -Invoke Invoke-ToastSql -Times 1 -Exactly -ParameterFilter { $CommandText -like '*SELECT c.ComputerName*' }
+            Should -Invoke Invoke-ToastSql -Times 0 -Exactly -ParameterFilter {
+                $CommandText -like '*INSERT dbo.ToastClient*' -or $CommandText -like '*DELETE cg*'
+            }
         }
 
         It 'forwards OU filters and propagates invalid AD selections before writes' {

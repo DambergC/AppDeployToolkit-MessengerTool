@@ -6,7 +6,8 @@ function Import-ToastADComputers {
     Imports AD computers into a SQL notification group.
     .DESCRIPTION
     Reuses the standalone import script, including logging, validation and
-    parameterized SQL. Existing memberships are preserved; this is not a sync.
+    parameterized SQL. Importing an AD group synchronizes its recursive computer
+    membership to the tag; filter and OU imports remain add-only.
     Importing this module does not connect to AD or SQL.
     .PARAMETER ConfigPath
     Path to the administrator's local configuration data file.
@@ -17,7 +18,9 @@ function Import-ToastADComputers {
     be combined with an AD group SearchBase.
     .PARAMETER SearchBase
     Distinguished name of an OU/container or AD group. Groups are expanded
-    recursively and only computer members are imported. Omit to search AD.
+    recursively and only computer members are imported. When an AD group is
+    selected, existing tag memberships are synchronized to its current members.
+    Omit to search AD.
     .EXAMPLE
     Import-ToastADComputers -ConfigPath C:\Toast\admin.local.psd1 -Tag Pilot -SearchBase 'CN=Pilot,OU=Groups,DC=example,DC=test' -WhatIf
     Previews recursive group membership without changing SQL. AD/configuration

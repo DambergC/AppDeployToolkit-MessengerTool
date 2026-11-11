@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-Imports AD computers into a SQL notification group without removing memberships.
+Imports AD computers into a SQL notification group and synchronizes membership when selecting an AD group.
 .DESCRIPTION
 Queries AD computers from a filter/OU or recursively from an AD group DN.
 Adds missing SQL groups, clients and memberships using parameterized SQL.
-AD is read-only. WhatIf prevents SQL writes but still reads AD/configuration
-and writes normal server logs. For GUI functions, import ToastAdmin.psm1.
+When SearchBase is an AD group, removes tag memberships for computers no longer
+in that group. AD is read-only. WhatIf prevents SQL writes but still reads
+AD/configuration and writes normal server logs. For GUI functions, import ToastAdmin.psm1.
 .PARAMETER ConfigPath
 Path to the administrator's local configuration data file.
 .PARAMETER Tag
@@ -13,7 +14,7 @@ SQL notification group name, not an AD attribute.
 .PARAMETER Filter
 Get-ADComputer filter. A custom filter cannot be used with an AD group SearchBase.
 .PARAMETER SearchBase
-Distinguished name of an OU/container or AD group. Omit to search AD.
+Distinguished name of an OU/container or AD group. Omit to search AD. When an AD group is selected, its recursive computer membership is synchronized to the tag.
 .EXAMPLE
 .\Import-ToastADComputers.ps1 -ConfigPath C:\Toast\admin.local.psd1 -Tag Pilot -SearchBase 'CN=Pilot,OU=Groups,DC=example,DC=test' -WhatIf
 .OUTPUTS
@@ -38,6 +39,7 @@ $logPath = Get-ToastServerLogPath
 $component = 'Server'
 $changeCount = 0
 $computerCount = 0
+$syncGroupMembership = $false
 Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message 'AD import started.'
 try {
 Import-Module "$PSScriptRoot\..\Module\ToastSql.psm1" -Force
@@ -55,6 +57,7 @@ if ($PSBoundParameters.ContainsKey('SearchBase')) {
         if ($Filter -ne '*') {
             throw 'Filter cannot be used with an AD group SearchBase; group membership determines the computer selection.'
         }
+        $syncGroupMembership = $true
         $computers = @(Get-ADGroupMember -Identity $SearchBase -Recursive -ErrorAction Stop |
             Where-Object { $_.ObjectClass -eq 'computer' } |
             Select-Object -ExpandProperty Name -Unique)
@@ -109,11 +112,43 @@ BEGIN CATCH
 END CATCH;
 '@
 
+$getTagMembershipSql = @'
+SELECT c.ComputerName
+FROM dbo.ToastClientGroup AS cg
+INNER JOIN dbo.ToastGroup AS g ON g.GroupId = cg.GroupId
+INNER JOIN dbo.ToastClient AS c ON c.ClientId = cg.ClientId
+WHERE g.GroupName = @GroupName;
+'@
+
+$removeTagMembershipSql = @'
+DELETE cg
+FROM dbo.ToastClientGroup AS cg
+INNER JOIN dbo.ToastGroup AS g ON g.GroupId = cg.GroupId
+INNER JOIN dbo.ToastClient AS c ON c.ClientId = cg.ClientId
+WHERE g.GroupName = @GroupName AND c.ComputerName = @ComputerName;
+SELECT @@ROWCOUNT AS Changes;
+'@
+
 foreach ($computer in $computers) {
     if ($PSCmdlet.ShouldProcess("$computer -> $Tag", 'Register computer and add notification group membership')) {
         $result = Invoke-ToastSql -ConnectionString $connectionString -SqlCredential $credential -CommandText $sql -Parameters @{ ComputerName = $computer; GroupName = $Tag } -CommandTimeoutSeconds $config.CommandTimeoutSeconds
         $changeCount += [int]$result.Rows[0]['Changes']
         [pscustomobject]@{ ComputerName = $computer; Tag = $Tag }
+    }
+}
+
+if ($syncGroupMembership) {
+    $currentTagMemberships = Invoke-ToastSql -ConnectionString $connectionString -SqlCredential $credential -CommandText $getTagMembershipSql -Parameters @{ GroupName = $Tag } -CommandTimeoutSeconds $config.CommandTimeoutSeconds
+    $selectedComputers = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($computer in $computers) {
+        [void]$selectedComputers.Add($computer)
+    }
+    foreach ($membership in $currentTagMemberships.Rows) {
+        $computer = [string]$membership['ComputerName']
+        if (-not $selectedComputers.Contains($computer) -and $PSCmdlet.ShouldProcess("$computer -> $Tag", 'Remove computer from notification group')) {
+            $result = Invoke-ToastSql -ConnectionString $connectionString -SqlCredential $credential -CommandText $removeTagMembershipSql -Parameters @{ ComputerName = $computer; GroupName = $Tag } -CommandTimeoutSeconds $config.CommandTimeoutSeconds
+            $changeCount += [int]$result.Rows[0]['Changes']
+        }
     }
 }
 } catch {
