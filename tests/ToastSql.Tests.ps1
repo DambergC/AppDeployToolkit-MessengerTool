@@ -1050,8 +1050,14 @@ Describe 'ToastSql module' {
             Mock Get-ToastSqlCredential { $null }
             Mock Invoke-ToastSql {
                 $table = [System.Data.DataTable]::new()
-                [void]$table.Columns.Add('Changes', [int])
-                [void]$table.Rows.Add(1)
+                if ($CommandText -like '*SELECT c.ComputerName*') {
+                    [void]$table.Columns.Add('ComputerName', [string])
+                    [void]$table.Rows.Add('PC01')
+                }
+                else {
+                    [void]$table.Columns.Add('Changes', [int])
+                    [void]$table.Rows.Add(1)
+                }
                 Write-Output -NoEnumerate $table
             }
         }
@@ -1080,7 +1086,9 @@ Describe 'ToastSql module' {
             @($result).Count | Should -Be 1
             Should -Invoke Get-ADGroupMember -Times 1 -ParameterFilter { $Recursive -and $Identity -eq 'CN=Computers,DC=test' }
             Should -Invoke Get-ADComputer -Times 0
-            Should -Invoke Invoke-ToastSql -Times 1 -ParameterFilter { $Parameters.ComputerName -eq 'PC01' }
+            Should -Invoke Invoke-ToastSql -Times 2 -Exactly -ParameterFilter {
+                $Parameters.ComputerName -eq 'PC01' -or ($null -eq $Parameters.ComputerName -and $Parameters.GroupName -eq 'IT')
+            }
         }
         It 'rejects custom filters with group membership selection' {
             Mock Get-ADObject { [pscustomobject]@{ ObjectClass = 'group' } }

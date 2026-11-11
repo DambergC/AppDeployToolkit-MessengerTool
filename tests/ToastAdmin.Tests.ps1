@@ -54,7 +54,7 @@ Describe 'ToastAdmin GUI functions' {
         }
 
         It 'preserves sender validation and propagates SQL failures to GUI callers' {
-            { Send-ToastMessage -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours } | Should -Throw '*exactly one*'
+            { Send-ToastMessage -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body } | Should -Throw '*exactly one*'
             Should -Invoke Invoke-ToastSql -Times 0
             Mock Invoke-ToastSql { throw 'SQL unavailable' }
             { Send-ToastMessage -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours } | Should -Throw '*SQL unavailable*'
