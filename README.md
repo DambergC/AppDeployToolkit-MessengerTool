@@ -2,6 +2,8 @@
 
 Gruppbaserade meddelanden från SQL Server till interaktiva Windows-sessioner. Administratören importerar datorgrupper från AD och köar meddelanden. Klienten läser kön och visar en AppDeployToolkit-dialog med **en kvitteringsknapp** (standardtext `Stäng`). Lässtatus och eventuella repetitioner lagras lokalt **per dator i HKLM**, aldrig som leveranshistorik i SQL.
 
+SQL-frågor för löpande administration finns i [Underhåll av databasen](sql/Database-Maintenance.md).
+
 ## Förutsättningar
 
 - 64-bitars Windows och 64-bitars Windows PowerShell 5.1 eller PowerShell 7. Det medföljande PSAppDeployToolkit-manifestet kräver minst Windows PowerShell 5.1.14393.0.
