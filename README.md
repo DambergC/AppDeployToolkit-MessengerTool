@@ -87,7 +87,15 @@ GO
 ```
 
 - `ToastClientReader`: `EXECUTE` på den SELECT-baserade `dbo.usp_GetPendingToast`; `INSERT`, `UPDATE` och `DELETE` nekas. Ingen klientregistrering eller skrivning till SQL.
-- `ToastMessageAdmin`: `EXECUTE` på `dbo.usp_QueueToastMessage` samt `SELECT`/`INSERT` på de tre måltabellerna `ToastGroup`, `ToastClient`, `ToastClientGroup`, vilket AD-importens parametriserade SQL använder.
+- `ToastMessageAdmin`: `EXECUTE` på `dbo.usp_QueueToastMessage`, `SELECT`/`INSERT` på de tre måltabellerna `ToastGroup`, `ToastClient`, `ToastClientGroup` samt `DELETE` på `ToastClient` och `ToastClientGroup` för AD-gruppsynkningen.
+
+För en redan installerad databas behöver DBA ge rollen borttagningsrättigheter i den valda applikationsdatabasen (kör inte om installationsskriptet):
+
+```sql
+USE [ToastNotifications];
+GRANT DELETE ON OBJECT::dbo.ToastClient TO ToastMessageAdmin;
+GRANT DELETE ON OBJECT::dbo.ToastClientGroup TO ToastMessageAdmin;
+```
 
 Kör import/köning med administratörens Windows-identitet. Med `UseIntegratedSecurity = $true` autentiserar SYSTEM på en domänansluten klient mot en fjärransluten SQL Server som `EXAMPLE\DATORNAMN$`, inte som den inloggade användaren. Användarläget använder däremot användarens Windows-identitet. SQL-servern måste kunna autentisera den valda domänidentiteten. Ge klientidentiteten rollen `ToastClientReader`: enbart SELECT-rättigheter ersätter inte EXECUTE på läsproceduren. För `Domain Computers`, ersätt `ToastClientComputers` med det faktiska gruppnamnet på alla tre ställena i exemplet.
 
@@ -121,7 +129,7 @@ Alternativt anger du en AD-grupps DN som `SearchBase`; då används rekursiva da
   -SearchBase 'CN=ToastPilot,OU=Groups,DC=example,DC=test' -WhatIf
 ```
 
-Ta bort `-WhatIf` efter kontroll för att importera gruppurvalet. Importen ändrar inte AD. Saknade grupper, datorer och medlemskap läggs till utan dubbletter; befintliga medlemskap bevaras, inte synkroniseras bort. Inaktiva objekt återaktiveras inte. Klienterna registrerar aldrig sig själva.
+Ta bort `-WhatIf` efter kontroll för att importera gruppurvalet. Importen ändrar inte AD. Saknade grupper, datorer och medlemskap läggs till utan dubbletter. Vid AD-gruppurval synkroniseras tagget: datorer som inte längre ingår i gruppen tas bort från tagget och raderas även från `ToastClient` om de saknar andra taggar. Andra taggar bevaras. En tom AD-grupp tömmer tagget och samma rensning gäller då. Använd därför ett eget tagg per AD-grupp; även manuellt tillagda medlemskap i tagget tas bort om datorn saknas i gruppen. OU-/filterimport lägger fortfarande bara till medlemskap. Detta gäller både skriptet och funktionen i `ToastAdmin.psm1`. Inaktiva objekt återaktiveras inte. Klienterna registrerar aldrig sig själva.
 
 ## 4. Köa ett meddelande med obligatorisk giltighetstid
 

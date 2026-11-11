@@ -1133,6 +1133,8 @@ Describe 'ToastSql module' {
             $text | Should -Match 'GRANT EXECUTE ON OBJECT::dbo.usp_GetPendingToast TO ToastClientReader'
             $text | Should -Match 'DENY INSERT, UPDATE, DELETE TO ToastClientReader'
             $text | Should -Match 'DENY EXECUTE ON OBJECT::dbo.usp_QueueToastMessage TO ToastClientReader'
+            $text | Should -Match 'GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClient TO ToastMessageAdmin'
+            $text | Should -Match 'GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClientGroup TO ToastMessageAdmin'
         }
 
         It 'validates mutually exclusive expiration and calculates durations from the insertion UTC clock' {

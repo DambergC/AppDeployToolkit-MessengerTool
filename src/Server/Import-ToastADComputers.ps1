@@ -5,7 +5,8 @@ Imports AD computers into a SQL notification group and synchronizes membership w
 Queries AD computers from a filter/OU or recursively from an AD group DN.
 Adds missing SQL groups, clients and memberships using parameterized SQL.
 When SearchBase is an AD group, removes tag memberships for computers no longer
-in that group. AD is read-only. WhatIf prevents SQL writes but still reads
+in that group and deletes those computers from SQL if they have no tags left.
+Other tags and their computers are preserved. AD is read-only. WhatIf prevents SQL writes but still reads
 AD/configuration and writes normal server logs. For GUI functions, import ToastAdmin.psm1.
 .PARAMETER ConfigPath
 Path to the administrator's local configuration data file.
@@ -71,7 +72,14 @@ else {
     $computers = @(Get-ADComputer @adParameters | Select-Object -ExpandProperty Name -Unique)
 }
 $computerCount = $computers.Count
-if ($computerCount -eq 0) { Write-Warning 'The AD selection returned no computers; nothing to import.' }
+if ($computerCount -eq 0) {
+    if ($syncGroupMembership) {
+        Write-Warning 'The AD group contains no computers; synchronization will remove all memberships from this tag and delete computers with no remaining tags.'
+    }
+    else {
+        Write-Warning 'The AD selection returned no computers; nothing to import.'
+    }
+}
 Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message "AD selection completed; computers=$computerCount."
 
 # Name matches the default client hostname (not DNSHostName). Validate the whole selection before writing.
@@ -121,12 +129,36 @@ WHERE g.GroupName = @GroupName;
 '@
 
 $removeTagMembershipSql = @'
-DELETE cg
-FROM dbo.ToastClientGroup AS cg
-INNER JOIN dbo.ToastGroup AS g ON g.GroupId = cg.GroupId
-INNER JOIN dbo.ToastClient AS c ON c.ClientId = cg.ClientId
-WHERE g.GroupName = @GroupName AND c.ComputerName = @ComputerName;
-SELECT @@ROWCOUNT AS Changes;
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRAN;
+    DECLARE @Changes int = 0;
+    DECLARE @ClientId int = (
+        SELECT ClientId FROM dbo.ToastClient WITH (UPDLOCK, HOLDLOCK)
+        WHERE ComputerName = @ComputerName
+    );
+    DELETE cg
+    FROM dbo.ToastClientGroup AS cg
+    INNER JOIN dbo.ToastGroup AS g ON g.GroupId = cg.GroupId
+    WHERE g.GroupName = @GroupName AND cg.ClientId = @ClientId;
+    SET @Changes = @@ROWCOUNT;
+    IF @Changes > 0
+    BEGIN
+        DELETE FROM dbo.ToastClient
+        WHERE ClientId = @ClientId
+          AND NOT EXISTS (
+              SELECT 1 FROM dbo.ToastClientGroup WITH (UPDLOCK, HOLDLOCK)
+              WHERE ClientId = @ClientId
+          );
+        SET @Changes += @@ROWCOUNT;
+    END
+    COMMIT;
+    SELECT @Changes AS Changes;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK;
+    THROW;
+END CATCH;
 '@
 
 foreach ($computer in $computers) {
@@ -145,7 +177,7 @@ if ($syncGroupMembership) {
     }
     foreach ($membership in $currentTagMemberships.Rows) {
         $computer = [string]$membership['ComputerName']
-        if (-not $selectedComputers.Contains($computer) -and $PSCmdlet.ShouldProcess("$computer -> $Tag", 'Remove computer from notification group')) {
+        if (-not $selectedComputers.Contains($computer) -and $PSCmdlet.ShouldProcess("$computer -> $Tag", 'Remove notification group membership and delete computer if no tags remain')) {
             $result = Invoke-ToastSql -ConnectionString $connectionString -SqlCredential $credential -CommandText $removeTagMembershipSql -Parameters @{ ComputerName = $computer; GroupName = $Tag } -CommandTimeoutSeconds $config.CommandTimeoutSeconds
             $changeCount += [int]$result.Rows[0]['Changes']
         }

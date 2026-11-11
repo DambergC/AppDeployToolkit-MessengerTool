@@ -200,8 +200,8 @@ DENY EXECUTE ON OBJECT::dbo.usp_QueueToastMessage TO ToastClientReader;
 
 GRANT EXECUTE ON OBJECT::dbo.usp_QueueToastMessage TO ToastMessageAdmin;
 GRANT SELECT, INSERT ON OBJECT::dbo.ToastGroup TO ToastMessageAdmin;
-GRANT SELECT, INSERT ON OBJECT::dbo.ToastClient TO ToastMessageAdmin;
-GRANT SELECT, INSERT ON OBJECT::dbo.ToastClientGroup TO ToastMessageAdmin;
+GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClient TO ToastMessageAdmin;
+GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClientGroup TO ToastMessageAdmin;
 ';
 
     COMMIT TRANSACTION;

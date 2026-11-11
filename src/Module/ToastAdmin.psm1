@@ -3,11 +3,14 @@ Set-StrictMode -Version Latest
 function Import-ToastADComputers {
     <#
     .SYNOPSIS
-    Imports AD computers into a SQL notification group.
+    Imports AD computers and synchronizes SQL tag membership for AD groups.
     .DESCRIPTION
     Reuses the standalone import script, including logging, validation and
     parameterized SQL. Importing an AD group synchronizes its recursive computer
     membership to the tag; filter and OU imports remain add-only.
+    Computers removed from the tag are also deleted from SQL when they have no
+    remaining tags. Computers with other tags are preserved, including when
+    the selected AD group is empty. WhatIf previews additions and removals.
     Importing this module does not connect to AD or SQL.
     .PARAMETER ConfigPath
     Path to the administrator's local configuration data file.

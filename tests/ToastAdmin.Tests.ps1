@@ -102,11 +102,42 @@ Describe 'ToastAdmin GUI functions' {
             $result = @(Import-ToastADComputers -ConfigPath admin.psd1 -Tag IT -SearchBase 'CN=Pilot,DC=test' -Confirm:$false)
             $result.Count | Should -Be 1
             Should -Invoke Invoke-ToastSql -Times 1 -Exactly -ParameterFilter {
-                $CommandText -like '*DELETE cg*' -and $Parameters.ComputerName -eq 'PC02' -and $Parameters.GroupName -eq 'IT'
+                $CommandText -like '*DELETE cg*' -and $Parameters.ComputerName -eq 'PC02' -and $Parameters.GroupName -eq 'IT' -and
+                $CommandText -match 'SET XACT_ABORT ON' -and $CommandText -match 'BEGIN TRAN' -and
+                $CommandText -match '(?s)IF @Changes > 0\s+BEGIN\s+DELETE FROM dbo\.ToastClient\s+WHERE ClientId = @ClientId\s+AND NOT EXISTS \(\s+SELECT 1 FROM dbo\.ToastClientGroup WITH \(UPDLOCK, HOLDLOCK\)\s+WHERE ClientId = @ClientId' -and
+                $CommandText -match 'IF @@TRANCOUNT > 0 ROLLBACK' -and $CommandText -match 'THROW;'
             }
             Should -Invoke Invoke-ToastSql -Times 0 -Exactly -ParameterFilter {
                 $CommandText -like '*DELETE cg*' -and $Parameters.ComputerName -eq 'PC01'
             }
+        }
+
+        It 'cleans up an empty AD group through the module without importing computers' {
+            Mock Get-ADGroupMember {}
+            Mock Invoke-ToastSql {
+                $table = [System.Data.DataTable]::new()
+                if ($CommandText -like '*SELECT c.ComputerName*') {
+                    [void]$table.Columns.Add('ComputerName', [string])
+                    [void]$table.Rows.Add('PC02')
+                }
+                else {
+                    [void]$table.Columns.Add('Changes', [int])
+                    [void]$table.Rows.Add(2)
+                }
+                Write-Output -NoEnumerate $table
+            }
+            @(Import-ToastADComputers -ConfigPath admin.psd1 -Tag IT -SearchBase 'CN=Pilot,DC=test' -Confirm:$false -WarningAction SilentlyContinue).Count | Should -Be 0
+            Should -Invoke Invoke-ToastSql -Times 1 -Exactly -ParameterFilter {
+                $CommandText -like '*DELETE FROM dbo.ToastClient*' -and $Parameters.ComputerName -eq 'PC02' -and $Parameters.GroupName -eq 'IT'
+            }
+            Should -Invoke Invoke-ToastSql -Times 0 -ParameterFilter { $CommandText -like '*INSERT dbo.ToastClient*' }
+            Should -Invoke Write-ToastLog -Times 1 -Exactly -ParameterFilter { $Message -eq 'AD import finished; computers=0; changes=2.' }
+        }
+
+        It 'propagates AD lookup failures without removing any memberships or clients' {
+            Mock Get-ADGroupMember { throw 'AD lookup failed' }
+            { Import-ToastADComputers -ConfigPath admin.psd1 -Tag IT -SearchBase 'CN=Pilot,DC=test' -Confirm:$false } | Should -Throw '*AD lookup failed*'
+            Should -Invoke Invoke-ToastSql -Times 0
         }
 
         It 'forwards import WhatIf without writing SQL' {
