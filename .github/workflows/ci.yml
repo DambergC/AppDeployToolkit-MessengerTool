@@ -19,5 +19,6 @@ jobs:
       - name: Pester
         shell: pwsh
         run: |
-          Install-Module Pester -MinimumVersion 5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999.999 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999.999
           Invoke-Pester -Path tests -CI

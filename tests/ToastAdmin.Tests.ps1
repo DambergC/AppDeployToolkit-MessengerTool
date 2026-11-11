@@ -1,4 +1,4 @@
-BeforeAll {
+BeforeDiscovery {
     Import-Module (Join-Path $PSScriptRoot '../src/Module/ToastAdmin.psm1') -Force
 }
 
