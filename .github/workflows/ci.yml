@@ -13,7 +13,7 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $r = Invoke-ScriptAnalyzer -Path src,deploy -Recurse -Severity Error
+          $r = 'src','deploy' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Error }
           $r | Format-Table
           if ($r) { exit 1 }
       - name: Pester

@@ -1,3 +1,28 @@
+<#
+.SYNOPSIS
+Imports AD computers into a SQL notification group without removing memberships.
+.DESCRIPTION
+Queries AD computers from a filter/OU or recursively from an AD group DN.
+Adds missing SQL groups, clients and memberships using parameterized SQL.
+AD is read-only. WhatIf prevents SQL writes but still reads AD/configuration
+and writes normal server logs. For GUI functions, import ToastAdmin.psm1.
+.PARAMETER ConfigPath
+Path to the administrator's local configuration data file.
+.PARAMETER Tag
+SQL notification group name, not an AD attribute.
+.PARAMETER Filter
+Get-ADComputer filter. A custom filter cannot be used with an AD group SearchBase.
+.PARAMETER SearchBase
+Distinguished name of an OU/container or AD group. Omit to search AD.
+.EXAMPLE
+.\Import-ToastADComputers.ps1 -ConfigPath C:\Toast\admin.local.psd1 -Tag Pilot -SearchBase 'CN=Pilot,OU=Groups,DC=example,DC=test' -WhatIf
+.OUTPUTS
+PSCustomObject with ComputerName and Tag per processed computer, including
+existing memberships. No success objects during WhatIf.
+.NOTES
+Requires RSAT ActiveDirectory and administrator SQL permissions.
+An error on a later computer does not roll back previously imported computers.
+#>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)][string]$ConfigPath,
