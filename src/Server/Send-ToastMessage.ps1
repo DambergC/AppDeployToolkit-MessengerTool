@@ -1,4 +1,45 @@
-﻿[CmdletBinding()]
+﻿<#
+.SYNOPSIS
+Queues a plain-text notification for a SQL notification group.
+.DESCRIPTION
+Validates expiry and optional repeat settings, checks the SQL TCP port by
+default, and queues through parameterized SQL with server logging.
+Use ExpiresUtc with an explicit timezone OR ActiveDuration with DurationUnit.
+Queueing does not confirm delivery. For GUI functions, import ToastAdmin.psm1.
+.PARAMETER ConfigPath
+Path to the administrator's local configuration data file.
+.PARAMETER GroupName
+Existing SQL notification group name.
+.PARAMETER Title
+Required plain-text dialog title.
+.PARAMETER Body
+Required plain-text message.
+.PARAMETER Subtitle
+Optional independent subtitle.
+.PARAMETER ExpiresUtc
+Future timestamp with explicit timezone; cannot be combined with duration.
+.PARAMETER ActiveDuration
+Positive integer duration calculated at SQL queue time.
+.PARAMETER DurationUnit
+Days, Hours or Minutes; required with ActiveDuration.
+.PARAMETER AcknowledgeButtonText
+Single acknowledgement button label. Blank uses the default; Timeout is reserved.
+.PARAMETER RepeatIntervalSeconds
+Repeat interval in seconds; use seconds or minutes with RepeatCount.
+.PARAMETER RepeatIntervalMinutes
+Repeat interval in minutes instead of seconds.
+.PARAMETER RepeatCount
+Total acknowledgement count including the first display, at least 2.
+.PARAMETER CheckSqlPort
+Controls only the TCP precheck, not SQL authentication or TLS validation.
+.PARAMETER PassThru
+Returns MessageId and GroupName as an object instead of the default status text.
+.EXAMPLE
+.\Send-ToastMessage.ps1 -ConfigPath C:\Toast\admin.local.psd1 -GroupName Pilot -Title Maintenance -Body 'Save your work.' -ActiveDuration 2 -DurationUnit Hours
+.OUTPUTS
+System.String by default; PSCustomObject with MessageId and GroupName with PassThru.
+#>
+[CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$ConfigPath,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][ValidateLength(1,128)][string]$GroupName,
@@ -12,7 +53,8 @@ param(
     [Nullable[int]]$RepeatIntervalSeconds,
     [Nullable[int]]$RepeatIntervalMinutes,
     [Nullable[int]]$RepeatCount,
-    [Parameter(HelpMessage='Enable or disable the SQL TCP port precheck; SQL authentication and TLS validation always apply.')][bool]$CheckSqlPort = $true
+    [Parameter(HelpMessage='Enable or disable the SQL TCP port precheck; SQL authentication and TLS validation always apply.')][bool]$CheckSqlPort = $true,
+    [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
@@ -68,7 +110,12 @@ $result = Invoke-ToastSql -ConnectionString $conn -SqlCredential $sqlCredential 
 $queuedResult = Resolve-ToastQueueResult -Result $result
 Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId `
     -Message 'Message queued successfully.' -MessageId $queuedResult.MessageId
-Write-Output "Queued message $($queuedResult.MessageId) for group '$GroupName'."
+if ($PassThru) {
+    [pscustomobject]@{ MessageId = $queuedResult.MessageId; GroupName = $GroupName }
+}
+else {
+    Write-Output "Queued message $($queuedResult.MessageId) for group '$GroupName'."
+}
 } catch {
     Write-ToastLog -Path $logPath -Level Error -Component $component -RunId $runId -ErrorKey 'Queue' `
         -Message "Message queue operation failed ($($_.Exception.GetType().Name))."

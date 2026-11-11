@@ -996,6 +996,14 @@ Describe 'ToastSql module' {
             Should -Invoke Invoke-ToastSql -Times 1 -Exactly
         }
 
+        It 'returns only a structured queue result when PassThru is requested' {
+            $result = @(& "$PSScriptRoot/../src/Server/Send-ToastMessage.ps1" -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours -PassThru)
+            $result.Count | Should -Be 1
+            $result[0].MessageId | Should -Be 42
+            $result[0].MessageId | Should -BeOfType ([long])
+            $result[0].GroupName | Should -Be 'IT'
+        }
+
         It 'enables the TCP precheck explicitly and stops before SQL on failure' {
             Mock Test-ToastSqlPort { throw 'TCP precheck failed' }
             { & "$PSScriptRoot/../src/Server/Send-ToastMessage.ps1" -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours -CheckSqlPort:$true } | Should -Throw '*TCP precheck failed*'

@@ -172,6 +172,59 @@ Utelämna repetitionsparametrar för engångsvisning. Vid behov kan **antingen**
 
 `Send-ToastMessage.ps1` kontrollerar som standard TCP-åtkomst till SQL-porten före köning. Ange `-CheckSqlPort:$false` för att hoppa över förkontrollen eller `-CheckSqlPort:$true` för att uttryckligen aktivera den. Detta är inte ICMP-ping. SQL-anslutning, autentisering, TLS-validering och ordinarie felhantering krävs även när förkontrollen är avstängd. Klienten och AD-importen ansluter redan direkt till SQL utan denna förkontroll.
 
+### Funktioner för SAPIEN PowerShell Studio
+
+De fristående skripten finns kvar och fungerar som tidigare. Den valfria modulen `src\Module\ToastAdmin.psm1` exponerar `Import-ToastADComputers` och `Send-ToastMessage` för egna GUI:n. Funktionerna återanvänder skripten, inklusive validering, parametriserad SQL och serverloggning. Distribuera därför hela `src\Module` och `src\Server` tillsammans med GUI:t; modulen är inte en fristående paketerad EXE.
+
+Importera modulen i projektets startkod eller formulärets Load-händelse, inte vid varje knapptryckning. Använd en uttrycklig installationssökväg även i paketerade projekt:
+
+```powershell
+$script:toastRoot = 'C:\Program Files\AppDeployToolkit-MessengerTool'
+$script:adminConfig = Join-Path $script:toastRoot 'config\admin.local.psd1'
+Import-Module (Join-Path $script:toastRoot 'src\Module\ToastAdmin.psm1') -ErrorAction Stop
+
+Get-Help Import-ToastADComputers -Full
+Get-Help Send-ToastMessage -Examples
+```
+
+Enbart modulimporten kontaktar varken AD eller SQL och startar ingen klient. Samma Windows-/SQL-behörigheter och RSAT-krav som för skripten gäller när funktionerna körs. Funktionerna avslutar inte GUI-processen; fel kastas till anroparen.
+
+Exempel på Click-händelser i PowerShell Studio. Anpassa kontrollnamnen till formuläret: textrutorna `textboxTag`, `textboxSearchBase`, `textboxGroupName`, `textboxTitle`, `textboxBody`, `textboxStatus` och `datagridviewComputers`. SearchBase-exemplet kräver en AD-grupps eller OU:s DN. Ange motsvarande knapphändelser i designern:
+
+```powershell
+$buttonImport_Click = {
+    try {
+        $rows = @(Import-ToastADComputers -ConfigPath $script:adminConfig `
+            -Tag $textboxTag.Text -SearchBase $textboxSearchBase.Text -ErrorAction Stop)
+        $datagridviewComputers.DataSource = [System.Collections.ArrayList]$rows
+        $textboxStatus.Text = "Processed $($rows.Count) computers."
+    }
+    catch {
+        # Tidigare datorer kan redan vara importerade; importen kan köras igen.
+        $textboxStatus.Text = "Import failed (may be partial): $($_.Exception.Message)"
+    }
+}
+
+$buttonSend_Click = {
+    try {
+        $message = Send-ToastMessage -ConfigPath $script:adminConfig `
+            -GroupName $textboxGroupName.Text -Title $textboxTitle.Text `
+            -Body $textboxBody.Text -ActiveDuration 2 -DurationUnit Hours `
+            -Confirm:$false -ErrorAction Stop
+        $textboxStatus.Text = "Queued message $($message.MessageId)."
+    }
+    catch {
+        $textboxStatus.Text = "Queue failed: $($_.Exception.Message)"
+    }
+}
+```
+
+Importfunktionen ger ett objekt med `ComputerName` och `Tag` per behandlad dator, även för befintliga medlemskap. Send-funktionen ger ett objekt med `MessageId` (`Int64`) och `GroupName`, inte konsoltext. Det betyder köat, inte levererat eller kvitterat. Det fristående `Send-ToastMessage.ps1` behåller sin textutskrift; använd dess nya `-PassThru` om objekt önskas även där.
+
+Båda funktionerna stöder `-WhatIf`/`-Confirm`. Importens `-WhatIf` läser fortfarande AD/konfiguration och skriver logg, men ändrar inte SQL. Send-funktionens `-WhatIf` hoppar över hela sändningen och returnerar inget objekt; det verifierar därför inte inställningar eller anslutning. Använd inte interaktiva konsolfrågor för bekräftelse i ett paketerat GUI: visa egen bekräftelsedialog och anropa därefter med `-Confirm:$false`.
+
+Exemplen kör synkront och kan blockera formuläret under AD-/SQL-anrop. För produktion kan PowerShell Studios bakgrundsjobb/runspace-mönster användas: importera modulen även där, skicka in vanliga parametervärden och återför resultat/fel till UI-tråden. Uppdatera inte WinForms-kontroller direkt från en bakgrundstråd. Om en NumericUpDown används för `ActiveDuration`, konvertera dess decimalvärde till `[int]` före anropet; heltalsvalideringen är avsiktligt strikt.
+
 ## 5. Starta och verifiera klienten
 
 Provisionera först lässtatus på varje klientdator i **64-bitars PowerShell som administratör**, efter att klientkonfigurationen har färdigställts:
