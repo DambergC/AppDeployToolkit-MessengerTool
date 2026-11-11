@@ -1,3 +1,7 @@
+<#
+.SYNOPSIS
+Runs the toast notification client, processing notifications from the configured SQL database in a user or SYSTEM session.
+#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ConfigPath,
@@ -38,7 +42,7 @@ $conn = Get-ToastConnectionString $config
 $sqlCredential = Get-ToastSqlCredential $config
 $failureCount = 0
 $statePath = Get-ToastReadStatePath -Server $config.SqlServer -Port $config.SqlPort -Database $config.SqlDatabase -ComputerName $config.ClientName
-Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message "Read-state scope=$($statePath.Split('\')[-1])."
+Write-ToastLog -Path $logPath -Level Info -Component $component -RunId $runId -Message "Read-state scope=$($statePath.Split('\\')[-1])."
 if (-not (Test-Path -LiteralPath $statePath -ErrorAction Stop)) {
     throw 'Read-state scope is not provisioned. Run deploy\Initialize-ToastReadState.ps1 with this configuration in an elevated 64-bit PowerShell session before starting the client.'
 }
