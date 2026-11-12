@@ -69,7 +69,7 @@ sqlcmd -S 'tcp:sql01.example.test,1433' -E -N -b -f 65001 -d ToastNotifications 
 if ($LASTEXITCODE -ne 0) { throw 'SQL-installationen misslyckades; kontrollera felutskriften.' }
 ```
 
-Kör **enbart** detta installationsskript i den uttryckligen valda, tomma databasen. Det installerar tabellerna `dbo.ToastGroup`, `dbo.ToastClient`, `dbo.ToastClientGroup`, `dbo.ToastMessage`, `dbo.ToastMessageTemplate`, kö-/läsprocedurer och roller. Meddelandemallar innehåller `Title`, valfri `Subtitle`, `Body` samt valfria `Name` och `Description`; SQL för att uppdatera en befintlig malltabell samt lista, spara och ta bort mallar finns i [Underhåll av databasen](sql/Database-Maintenance.md#meddelandemallar). Inga delivery-, lease- eller historiktabeller behövs.
+Kör **enbart** detta installationsskript i den uttryckligen valda, tomma databasen. Det installerar tabellerna `dbo.ToastGroup`, `dbo.ToastClient`, `dbo.ToastClientGroup`, `dbo.ToastMessage`, `dbo.ToastMessageTemplate`, kö-/läsprocedurer och roller. Meddelandemallar innehåller `Title`, valfri `Subtitle`, `Body`, `AcknowledgeButtonText` samt valfria `Name` och `Description`; SQL för att uppdatera en befintlig malltabell samt lista, spara och ta bort mallar finns i [Underhåll av databasen](sql/Database-Maintenance.md#meddelandemallar). Inga delivery-, lease- eller historiktabeller behövs.
 
 ### Separera SQL-identiteter
 

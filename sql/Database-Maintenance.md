@@ -27,7 +27,9 @@ med rollen `ToastMessageAdmin`. Varje mall har ett `TemplateId`, obligatoriska
 `Title` (högst 200 tecken) och `Body` (högst 4000 tecken) samt valfri `Subtitle`
 (högst 200 tecken). Mallens `Name` (högst 200 tecken) och `Description`
 (högst 4000 tecken) är valfria och kan vara `NULL`. Titel och brödtext får inte
-vara tomma eller enbart blanksteg.
+vara tomma eller enbart blanksteg. `AcknowledgeButtonText` är knapptexten
+(högst 200 tecken, standardvärde `Stäng`). Den får inte vara tom, enbart
+blanksteg eller `Timeout` (oavsett skiftläge).
 Mallarna är fristående; att spara eller ta bort en mall påverkar inte köade
 meddelanden.
 
@@ -43,10 +45,23 @@ ALTER TABLE dbo.ToastMessageTemplate
 ADD Name nvarchar(200) NULL, Description nvarchar(4000) NULL;
 ```
 
+Om tabellen saknar `AcknowledgeButtonText`, kör även följande en gång efter
+en verifierad backup. Befintliga mallar får knapptexten `Stäng`.
+
+```sql
+ALTER TABLE dbo.ToastMessageTemplate
+ADD AcknowledgeButtonText nvarchar(200) NOT NULL
+        CONSTRAINT DF_ToastMessageTemplate_AcknowledgeButtonText DEFAULT (N'Stäng'),
+    CONSTRAINT CK_ToastMessageTemplate_AcknowledgeButtonText CHECK (
+        LEN(LTRIM(RTRIM(AcknowledgeButtonText))) > 0
+        AND LTRIM(RTRIM(AcknowledgeButtonText)) COLLATE Latin1_General_100_CI_AS <> N'Timeout'
+    );
+```
+
 ### Lista mallar
 
 ```sql
-SELECT TemplateId, Name, Description, Title, Subtitle, Body
+SELECT TemplateId, Name, Description, Title, Subtitle, Body, AcknowledgeButtonText
 FROM dbo.ToastMessageTemplate
 ORDER BY TemplateId;
 ```
@@ -66,18 +81,20 @@ DECLARE @Description nvarchar(4000) = N'Mall för information om planerat underh
 DECLARE @Title nvarchar(200) = N'Planerat underhåll';
 DECLARE @Subtitle nvarchar(200) = N'Information från IT';
 DECLARE @Body nvarchar(4000) = N'Spara ditt arbete innan underhållet börjar.';
+DECLARE @AcknowledgeButtonText nvarchar(200) = N'Stäng';
 
 IF @TemplateId IS NULL
 BEGIN
-    INSERT dbo.ToastMessageTemplate (Name, Description, Title, Subtitle, Body)
-    OUTPUT inserted.TemplateId, inserted.Name, inserted.Description, inserted.Title, inserted.Subtitle, inserted.Body
-    VALUES (@Name, @Description, @Title, @Subtitle, @Body);
+    INSERT dbo.ToastMessageTemplate (Name, Description, Title, Subtitle, Body, AcknowledgeButtonText)
+    OUTPUT inserted.TemplateId, inserted.Name, inserted.Description, inserted.Title, inserted.Subtitle, inserted.Body, inserted.AcknowledgeButtonText
+    VALUES (@Name, @Description, @Title, @Subtitle, @Body, @AcknowledgeButtonText);
 END
 ELSE
 BEGIN
     UPDATE dbo.ToastMessageTemplate
-    SET Name = @Name, Description = @Description, Title = @Title, Subtitle = @Subtitle, Body = @Body
-    OUTPUT inserted.TemplateId, inserted.Name, inserted.Description, inserted.Title, inserted.Subtitle, inserted.Body
+    SET Name = @Name, Description = @Description, Title = @Title, Subtitle = @Subtitle, Body = @Body,
+        AcknowledgeButtonText = @AcknowledgeButtonText
+    OUTPUT inserted.TemplateId, inserted.Name, inserted.Description, inserted.Title, inserted.Subtitle, inserted.Body, inserted.AcknowledgeButtonText
     WHERE TemplateId = @TemplateId;
 
     IF @@ROWCOUNT = 0
@@ -94,7 +111,7 @@ returnerar den borttagna mallen. `NULL` tar inte bort något och ger ett fel.
 DECLARE @TemplateId int = NULL; -- Ersätt NULL med valt ID.
 
 DELETE FROM dbo.ToastMessageTemplate
-OUTPUT deleted.TemplateId, deleted.Name, deleted.Description, deleted.Title, deleted.Subtitle, deleted.Body
+OUTPUT deleted.TemplateId, deleted.Name, deleted.Description, deleted.Title, deleted.Subtitle, deleted.Body, deleted.AcknowledgeButtonText
 WHERE TemplateId = @TemplateId;
 
 IF @@ROWCOUNT = 0
