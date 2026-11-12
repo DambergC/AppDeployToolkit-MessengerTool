@@ -62,6 +62,8 @@ CREATE INDEX IX_ToastClientGroup_Group ON dbo.ToastClientGroup(GroupId, ClientId
 
 CREATE TABLE dbo.ToastMessageTemplate (
     TemplateId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ToastMessageTemplate PRIMARY KEY,
+    Name nvarchar(200) NULL,
+    Description nvarchar(4000) NULL,
     Title nvarchar(200) NOT NULL,
     Subtitle nvarchar(200) NULL,
     Body nvarchar(4000) NOT NULL,
