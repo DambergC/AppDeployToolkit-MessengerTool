@@ -863,6 +863,47 @@ Describe 'ToastSql module' {
             }
         }
 
+        It 'logs display and acknowledgement timestamps with the refreshed message text only once' {
+            InModuleScope ToastSql -Parameters @{ LogPath = (Join-Path $TestDrive 'MessageDetails.log') } {
+                $body = "First line`r`nSecond line with `"quotes`""
+                $script:pollRows[0] | Add-Member NoteProperty Title 'Old title'
+                Mock Invoke-ToastSql {
+                    [pscustomobject]@{
+                        MessageId = 42; Title = 'Current title'; Subtitle = $null; Body = $body
+                        ExpiresUtc = [datetime]::UtcNow.AddDays(1)
+                        RepeatCount = $null; RepeatIntervalSeconds = $null
+                    }
+                } -ParameterFilter { $Parameters.MessageId -eq 42 }
+                Invoke-ToastClientPoll @script:pollArgs -LogPath $LogPath -RunId 'details-test'
+                Invoke-ToastClientPoll @script:pollArgs -LogPath $LogPath -RunId 'details-test'
+                $entries = @(Get-Content -LiteralPath $LogPath | Where-Object { $_ -match 'Details=' })
+                $entries.Count | Should -Be 2
+                $entries[0] | Should -Match 'Displaying message dialog'
+                $entries[1] | Should -Match 'Dialog result: Acknowledge'
+                foreach ($entry in $entries) {
+                    $entry | Should -Match '<time="\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}" date="\d{4}-\d{2}-\d{2}"'
+                    $entry | Should -Match ';MessageId=42'
+                    $details = [regex]::Match($entry, 'Details=(.*?)\]LOG\]!>').Groups[1].Value | ConvertFrom-Json
+                    $details.ComputerName | Should -Be 'PC01'
+                    $details.Title | Should -Be 'Current title'
+                    $details.Subtitle | Should -BeNullOrEmpty
+                    $details.Body | Should -Be $body
+                }
+            }
+        }
+
+        It 'does not log an acknowledgement for timeout or failed display' {
+            InModuleScope ToastSql {
+                Mock Write-ToastLog {}
+                Mock Invoke-ToastNotification { [pscustomobject]@{ ResultType = 'Timeout' } }
+                Invoke-ToastClientPoll @script:pollArgs -LogPath 'test.log' -RunId 'details-test'
+                Mock Invoke-ToastNotification { throw 'Render failed' }
+                Invoke-ToastClientPoll @script:pollArgs -LogPath 'test.log' -RunId 'details-test' -WarningAction SilentlyContinue
+                Should -Invoke Write-ToastLog -Times 0 -ParameterFilter { $Message -like 'Dialog result: Acknowledge*' }
+                $script:localStates[42L].Read | Should -BeFalse
+            }
+        }
+
         It 'leaves render failures unread and continues with subsequent messages' {
             InModuleScope ToastSql {
                 $script:pollRows += [pscustomobject]@{ MessageId = 43; RepeatCount = $null; RepeatIntervalSeconds = $null; ExpiresUtc = [datetime]::UtcNow.AddDays(1) }
@@ -1139,7 +1180,7 @@ Describe 'ToastSql module' {
         It 'creates only the supported tables and no obsolete runtime contracts' {
             $text = Get-Content "$PSScriptRoot/../sql/Install-ToastDatabase.sql" -Raw
             @([regex]::Matches($text, '(?i)CREATE TABLE dbo\.(\w+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object) |
-                Should -Be @('ToastClient','ToastClientGroup','ToastGroup','ToastMessage','ToastMessageTemplate')
+                Should -Be @('ToastClient','ToastClientGroup','ToastGroup','ToastMessage','ToastMessageAudit','ToastMessageTemplate')
             $text | Should -Not -Match 'ToastDelivery|LeaseId|LastSeenUtc|IsUrgent|Scenario|DisplayMode|ButtonArguments|ButtonActivationType|AppLogo|HeroImage|\bSound\b|CREATE FUNCTION|CREATE VIEW|ufn_Toast|vw_Toast'
             foreach ($name in @('GroupName','Title','Subtitle','Body','AcknowledgeButtonText','ExpiresUtc','ActiveDuration','DurationUnit','RepeatIntervalSeconds','RepeatCount')) {
                 $text | Should -Match "@$name\b"

@@ -20,6 +20,50 @@ inte `SELECT`/`DELETE` på `dbo.ToastMessage`; en DBA behöver ge underhållskon
 dessa avgränsade rättigheter om de saknas. Ge inte klientrollen fler rättigheter
 och använd inte `db_owner` enbart för detta underhåll.
 
+## Serverlogg i databasen
+
+`dbo.ToastMessageAudit` loggar varje insättning, uppdatering (inklusive avbrott)
+och borttagning i `dbo.ToastMessage`, även via SSMS. Triggern skriver i samma
+transaktion som ändringen: auditfel stoppar ändringen och återställda
+transaktioner lämnar ingen historik. Misslyckade sändningsförsök finns bara i
+serverns lokala logg. Malländringar och AD-import loggas inte i denna tabell.
+
+Varje rad innehåller `EventType`, `EventUtc` (datum och klockslag i UTC),
+`SqlUser` (`ORIGINAL_LOGIN()`, SQL-inloggningen som skickade ändringen),
+`SqlServer`, `SenderHost`, meddelande-ID, grupp-ID/gruppnamn samt en kopia av
+hela meddelandet inklusive giltighet, knapptext och repetitionsinställningar.
+Vid uppdatering sparas värdena efter ändringen, vid borttagning de borttagna
+värdena. Historiken behålls även om meddelandet eller gruppen tas bort.
+`SenderHost` kommer från SQL-klienten och är inte en verifierad identitet.
+Med delade SQL-konton visar `SqlUser` det delade kontot, inte Windows-användaren.
+Klienternas läsning och kvittens loggas enbart lokalt, inte i databasen.
+
+Förstagångsinstallationen inkluderar audit. För en befintlig databas med
+aktuellt meddelandeschema: ta en verifierad backup och kör
+`sql/Enable-ToastMessageAudit.sql` som DBA i applikationsdatabasen en gång.
+Skriptet ändrar inte gamla meddelanden, procedurer eller klienträttigheter;
+äldre händelser återskapas inte. Kör inte om `Install-ToastDatabase.sql`.
+Om auditobjekten redan finns avbryts uppgraderingen utan ändringar.
+
+Rollen `ToastMessageAdmin` får läsa audittabellen men får inga skrivrättigheter
+till den. `ToastClientReader` får ingen åtkomst. Historiken innehåller hela
+meddelandetexten och SQL-identiteten: hantera åtkomst, backup och retention
+enligt era krav. Automatisk gallring ingår inte; en DBA måste planera den
+separat.
+
+```sql
+SELECT AuditId, EventType, EventUtc, SqlUser, SqlServer, SenderHost,
+       MessageId, GroupId, GroupName, Title, Subtitle, Body,
+       AcknowledgeButtonText, CreatedUtc, ExpiresUtc,
+       RepeatIntervalSeconds, RepeatCount, IsCancelled
+FROM dbo.ToastMessageAudit
+ORDER BY AuditId DESC;
+```
+
+På en separat testdatabas kan en DBA köra `tests/ToastMessageAudit.Tests.sql`
+med `sqlcmd -b` efter installation eller audituppgradering. Testdata återställs
+med `ROLLBACK`.
+
 ## Meddelandemallar
 
 `dbo.ToastMessageTemplate` skapas vid förstagångsinstallationen och hanteras
