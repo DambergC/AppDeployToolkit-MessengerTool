@@ -20,6 +20,70 @@ inte `SELECT`/`DELETE` på `dbo.ToastMessage`; en DBA behöver ge underhållskon
 dessa avgränsade rättigheter om de saknas. Ge inte klientrollen fler rättigheter
 och använd inte `db_owner` enbart för detta underhåll.
 
+## Meddelandemallar
+
+`dbo.ToastMessageTemplate` skapas vid förstagångsinstallationen och hanteras
+med rollen `ToastMessageAdmin`. Varje mall har ett `TemplateId`, obligatoriska
+`Title` (högst 200 tecken) och `Body` (högst 4000 tecken) samt valfri `Subtitle`
+(högst 200 tecken). Titel och brödtext får inte vara tomma eller enbart blanksteg.
+Mallarna är fristående; att spara eller ta bort en mall påverkar inte köade
+meddelanden.
+
+### Lista mallar
+
+```sql
+SELECT TemplateId, Title, Subtitle, Body
+FROM dbo.ToastMessageTemplate
+ORDER BY TemplateId;
+```
+
+### Spara en mall
+
+Låt `@TemplateId` vara `NULL` för att skapa en ny mall. Ange ett befintligt
+`TemplateId` från listningen för att uppdatera en mall. Resultatet innehåller
+den sparade mallen och dess ID. Ersätt exempeltexterna före körning; `Subtitle`
+kan sättas till `NULL`. Använd SQL-parametrar om frågan anropas från ett program.
+
+```sql
+DECLARE @TemplateId int = NULL;
+DECLARE @Title nvarchar(200) = N'Planerat underhåll';
+DECLARE @Subtitle nvarchar(200) = N'Information från IT';
+DECLARE @Body nvarchar(4000) = N'Spara ditt arbete innan underhållet börjar.';
+
+IF @TemplateId IS NULL
+BEGIN
+    INSERT dbo.ToastMessageTemplate (Title, Subtitle, Body)
+    OUTPUT inserted.TemplateId, inserted.Title, inserted.Subtitle, inserted.Body
+    VALUES (@Title, @Subtitle, @Body);
+END
+ELSE
+BEGIN
+    UPDATE dbo.ToastMessageTemplate
+    SET Title = @Title, Subtitle = @Subtitle, Body = @Body
+    OUTPUT inserted.TemplateId, inserted.Title, inserted.Subtitle, inserted.Body
+    WHERE TemplateId = @TemplateId;
+
+    IF @@ROWCOUNT = 0
+        THROW 50013, 'Message template was not found.', 1;
+END;
+```
+
+### Ta bort en mall
+
+Ange valt `TemplateId` från listningen. Borttagningen är permanent och
+returnerar den borttagna mallen. `NULL` tar inte bort något och ger ett fel.
+
+```sql
+DECLARE @TemplateId int = NULL; -- Ersätt NULL med valt ID.
+
+DELETE FROM dbo.ToastMessageTemplate
+OUTPUT deleted.TemplateId, deleted.Title, deleted.Subtitle, deleted.Body
+WHERE TemplateId = @TemplateId;
+
+IF @@ROWCOUNT = 0
+    THROW 50013, 'Message template was not found.', 1;
+```
+
 ## Lista devices utan tag
 
 Visar både aktiva och inaktiva datorer som saknar gruppkopplingar.

@@ -1104,10 +1104,10 @@ Describe 'ToastSql module' {
     }
 
     Context 'first-install SQL contracts' {
-        It 'creates only the four supported tables and no obsolete runtime contracts' {
+        It 'creates only the supported tables and no obsolete runtime contracts' {
             $text = Get-Content "$PSScriptRoot/../sql/Install-ToastDatabase.sql" -Raw
             @([regex]::Matches($text, '(?i)CREATE TABLE dbo\.(\w+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object) |
-                Should -Be @('ToastClient','ToastClientGroup','ToastGroup','ToastMessage')
+                Should -Be @('ToastClient','ToastClientGroup','ToastGroup','ToastMessage','ToastMessageTemplate')
             $text | Should -Not -Match 'ToastDelivery|LeaseId|LastSeenUtc|IsUrgent|Scenario|DisplayMode|ButtonArguments|ButtonActivationType|AppLogo|HeroImage|\bSound\b|CREATE FUNCTION|CREATE VIEW|ufn_Toast|vw_Toast'
             foreach ($name in @('GroupName','Title','Subtitle','Body','AcknowledgeButtonText','ExpiresUtc','ActiveDuration','DurationUnit','RepeatIntervalSeconds','RepeatCount')) {
                 $text | Should -Match "@$name\b"
