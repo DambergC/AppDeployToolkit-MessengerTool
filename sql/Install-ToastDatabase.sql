@@ -67,8 +67,13 @@ CREATE TABLE dbo.ToastMessageTemplate (
     Title nvarchar(200) NOT NULL,
     Subtitle nvarchar(200) NULL,
     Body nvarchar(4000) NOT NULL,
+    AcknowledgeButtonText nvarchar(200) NOT NULL CONSTRAINT DF_ToastMessageTemplate_AcknowledgeButtonText DEFAULT (N''Stäng''),
     CONSTRAINT CK_ToastMessageTemplate_Title CHECK (LEN(LTRIM(RTRIM(Title))) > 0),
-    CONSTRAINT CK_ToastMessageTemplate_Body CHECK (LEN(LTRIM(RTRIM(Body))) > 0)
+    CONSTRAINT CK_ToastMessageTemplate_Body CHECK (LEN(LTRIM(RTRIM(Body))) > 0),
+    CONSTRAINT CK_ToastMessageTemplate_AcknowledgeButtonText CHECK (
+        LEN(LTRIM(RTRIM(AcknowledgeButtonText))) > 0
+        AND LTRIM(RTRIM(AcknowledgeButtonText)) COLLATE Latin1_General_100_CI_AS <> N''Timeout''
+    )
 );
 
 CREATE TABLE dbo.ToastMessage (

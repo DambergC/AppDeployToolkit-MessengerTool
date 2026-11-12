@@ -1113,11 +1113,27 @@ Describe 'ToastSql module' {
             $maintenance = Get-Content "$PSScriptRoot/../sql/Database-Maintenance.md" -Raw
             $maintenance | Should -Match 'ADD Name nvarchar\(200\) NULL, Description nvarchar\(4000\) NULL'
             $maintenance | Should -Match 'SELECT TemplateId, Name, Description, Title, Subtitle, Body'
-            $maintenance | Should -Match 'INSERT dbo\.ToastMessageTemplate \(Name, Description, Title, Subtitle, Body\)'
-            $maintenance | Should -Match 'VALUES \(@Name, @Description, @Title, @Subtitle, @Body\)'
+            $maintenance | Should -Match 'INSERT dbo\.ToastMessageTemplate \(Name, Description, Title, Subtitle, Body, AcknowledgeButtonText\)'
+            $maintenance | Should -Match 'VALUES \(@Name, @Description, @Title, @Subtitle, @Body, @AcknowledgeButtonText\)'
             $maintenance | Should -Match 'SET Name = @Name, Description = @Description, Title = @Title'
             @([regex]::Matches($maintenance, 'OUTPUT inserted\.TemplateId, inserted\.Name, inserted\.Description, inserted\.Title, inserted\.Subtitle, inserted\.Body')).Count | Should -Be 2
             $maintenance | Should -Match 'OUTPUT deleted\.TemplateId, deleted\.Name, deleted\.Description, deleted\.Title, deleted\.Subtitle, deleted\.Body'
+        }
+
+        It 'stores and returns a validated button text for templates' {
+            $install = Get-Content "$PSScriptRoot/../sql/Install-ToastDatabase.sql" -Raw
+            $table = [regex]::Match($install, '(?is)CREATE TABLE dbo\.ToastMessageTemplate\s*\((.*?)\n\);').Groups[1].Value
+            $table | Should -Match "AcknowledgeButtonText nvarchar\(200\) NOT NULL CONSTRAINT DF_ToastMessageTemplate_AcknowledgeButtonText DEFAULT \(N''Stäng''\)"
+            $table | Should -Match 'LEN\(LTRIM\(RTRIM\(AcknowledgeButtonText\)\)\) > 0'
+            $table | Should -Match "LTRIM\(RTRIM\(AcknowledgeButtonText\)\) COLLATE Latin1_General_100_CI_AS <> N''Timeout''"
+
+            $maintenance = Get-Content "$PSScriptRoot/../sql/Database-Maintenance.md" -Raw
+            $maintenance | Should -Match "ADD AcknowledgeButtonText nvarchar\(200\) NOT NULL\s+CONSTRAINT DF_ToastMessageTemplate_AcknowledgeButtonText DEFAULT \(N'Stäng'\)"
+            $maintenance | Should -Match "LTRIM\(RTRIM\(AcknowledgeButtonText\)\) COLLATE Latin1_General_100_CI_AS <> N'Timeout'"
+            $maintenance | Should -Match 'SELECT TemplateId, Name, Description, Title, Subtitle, Body, AcknowledgeButtonText'
+            $maintenance | Should -Match 'AcknowledgeButtonText = @AcknowledgeButtonText'
+            @([regex]::Matches($maintenance, 'OUTPUT inserted\.TemplateId, inserted\.Name, inserted\.Description, inserted\.Title, inserted\.Subtitle, inserted\.Body, inserted\.AcknowledgeButtonText')).Count | Should -Be 2
+            $maintenance | Should -Match 'OUTPUT deleted\.TemplateId, deleted\.Name, deleted\.Description, deleted\.Title, deleted\.Subtitle, deleted\.Body, deleted\.AcknowledgeButtonText'
         }
 
         It 'creates only the supported tables and no obsolete runtime contracts' {
