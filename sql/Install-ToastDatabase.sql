@@ -60,6 +60,15 @@ CREATE TABLE dbo.ToastClientGroup (
 );
 CREATE INDEX IX_ToastClientGroup_Group ON dbo.ToastClientGroup(GroupId, ClientId);
 
+CREATE TABLE dbo.ToastMessageTemplate (
+    TemplateId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ToastMessageTemplate PRIMARY KEY,
+    Title nvarchar(200) NOT NULL,
+    Subtitle nvarchar(200) NULL,
+    Body nvarchar(4000) NOT NULL,
+    CONSTRAINT CK_ToastMessageTemplate_Title CHECK (LEN(LTRIM(RTRIM(Title))) > 0),
+    CONSTRAINT CK_ToastMessageTemplate_Body CHECK (LEN(LTRIM(RTRIM(Body))) > 0)
+);
+
 CREATE TABLE dbo.ToastMessage (
     MessageId bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_ToastMessage PRIMARY KEY,
     GroupId int NOT NULL,
@@ -202,6 +211,7 @@ GRANT EXECUTE ON OBJECT::dbo.usp_QueueToastMessage TO ToastMessageAdmin;
 GRANT SELECT, INSERT ON OBJECT::dbo.ToastGroup TO ToastMessageAdmin;
 GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClient TO ToastMessageAdmin;
 GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClientGroup TO ToastMessageAdmin;
+GRANT SELECT, INSERT, UPDATE, DELETE ON OBJECT::dbo.ToastMessageTemplate TO ToastMessageAdmin;
 ';
 
     COMMIT TRANSACTION;

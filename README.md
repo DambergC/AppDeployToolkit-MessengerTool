@@ -69,7 +69,7 @@ sqlcmd -S 'tcp:sql01.example.test,1433' -E -N -b -f 65001 -d ToastNotifications 
 if ($LASTEXITCODE -ne 0) { throw 'SQL-installationen misslyckades; kontrollera felutskriften.' }
 ```
 
-Kör **enbart** detta installationsskript i den uttryckligen valda, tomma databasen. Det installerar tabellerna `dbo.ToastGroup`, `dbo.ToastClient`, `dbo.ToastClientGroup`, `dbo.ToastMessage`, kö-/läsprocedurer och roller. Inga delivery-, lease- eller historiktabeller behövs.
+Kör **enbart** detta installationsskript i den uttryckligen valda, tomma databasen. Det installerar tabellerna `dbo.ToastGroup`, `dbo.ToastClient`, `dbo.ToastClientGroup`, `dbo.ToastMessage`, `dbo.ToastMessageTemplate`, kö-/läsprocedurer och roller. Meddelandemallar innehåller `Title`, valfri `Subtitle` och `Body`; SQL för att lista, spara och ta bort mallar finns i [Underhåll av databasen](sql/Database-Maintenance.md#meddelandemallar). Inga delivery-, lease- eller historiktabeller behövs.
 
 ### Separera SQL-identiteter
 
@@ -89,7 +89,7 @@ GO
 ```
 
 - `ToastClientReader`: `EXECUTE` på den SELECT-baserade `dbo.usp_GetPendingToast`; `INSERT`, `UPDATE` och `DELETE` nekas. Ingen klientregistrering eller skrivning till SQL.
-- `ToastMessageAdmin`: `EXECUTE` på `dbo.usp_QueueToastMessage`, `SELECT`/`INSERT` på de tre måltabellerna `ToastGroup`, `ToastClient`, `ToastClientGroup` samt `DELETE` på `ToastClient` och `ToastClientGroup` för AD-gruppsynkningen.
+- `ToastMessageAdmin`: `EXECUTE` på `dbo.usp_QueueToastMessage`, `SELECT`/`INSERT` på de tre måltabellerna `ToastGroup`, `ToastClient`, `ToastClientGroup` samt `DELETE` på `ToastClient` och `ToastClientGroup` för AD-gruppsynkningen. Rollen har även `SELECT`/`INSERT`/`UPDATE`/`DELETE` på `dbo.ToastMessageTemplate` för mallhantering.
 
 För en redan installerad databas behöver DBA ge rollen borttagningsrättigheter i den valda applikationsdatabasen (kör inte om installationsskriptet):
 
