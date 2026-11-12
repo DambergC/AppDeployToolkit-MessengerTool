@@ -1104,6 +1104,22 @@ Describe 'ToastSql module' {
     }
 
     Context 'first-install SQL contracts' {
+        It 'includes optional template metadata in the schema and maintenance queries' {
+            $install = Get-Content "$PSScriptRoot/../sql/Install-ToastDatabase.sql" -Raw
+            $table = [regex]::Match($install, '(?is)CREATE TABLE dbo\.ToastMessageTemplate\s*\((.*?)\n\);').Groups[1].Value
+            $table | Should -Match '\bName nvarchar\(200\) NULL'
+            $table | Should -Match '\bDescription nvarchar\(4000\) NULL'
+
+            $maintenance = Get-Content "$PSScriptRoot/../sql/Database-Maintenance.md" -Raw
+            $maintenance | Should -Match 'ADD Name nvarchar\(200\) NULL, Description nvarchar\(4000\) NULL'
+            $maintenance | Should -Match 'SELECT TemplateId, Name, Description, Title, Subtitle, Body'
+            $maintenance | Should -Match 'INSERT dbo\.ToastMessageTemplate \(Name, Description, Title, Subtitle, Body\)'
+            $maintenance | Should -Match 'VALUES \(@Name, @Description, @Title, @Subtitle, @Body\)'
+            $maintenance | Should -Match 'SET Name = @Name, Description = @Description, Title = @Title'
+            @([regex]::Matches($maintenance, 'OUTPUT inserted\.TemplateId, inserted\.Name, inserted\.Description, inserted\.Title, inserted\.Subtitle, inserted\.Body')).Count | Should -Be 2
+            $maintenance | Should -Match 'OUTPUT deleted\.TemplateId, deleted\.Name, deleted\.Description, deleted\.Title, deleted\.Subtitle, deleted\.Body'
+        }
+
         It 'creates only the supported tables and no obsolete runtime contracts' {
             $text = Get-Content "$PSScriptRoot/../sql/Install-ToastDatabase.sql" -Raw
             @([regex]::Matches($text, '(?i)CREATE TABLE dbo\.(\w+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object) |
