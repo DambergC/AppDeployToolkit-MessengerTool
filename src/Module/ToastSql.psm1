@@ -733,7 +733,14 @@ function Invoke-ToastClientPoll {
         }
         if (-not (Test-ToastRowUnexpired -ToastRow $row)) { continue }
         if ($LogPath -and $RunId) {
-            Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId -Message 'Displaying message dialog.' -MessageId $row.MessageId
+            $messageDetails = [ordered]@{
+                ComputerName = $ComputerName
+                Title = Get-ToastObjectPropertyValue -InputObject $row -PropertyName 'Title'
+                Subtitle = Get-ToastObjectPropertyValue -InputObject $row -PropertyName 'Subtitle'
+                Body = Get-ToastObjectPropertyValue -InputObject $row -PropertyName 'Body'
+            } | ConvertTo-Json -Compress
+            Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId `
+                -Message "Displaying message dialog. Details=$messageDetails" -MessageId $row.MessageId
         }
         try {
             $result = Invoke-ToastNotification -ToastRow $row
@@ -758,7 +765,8 @@ function Invoke-ToastClientPoll {
         }
         if ($LogPath -and $RunId) {
             Clear-ToastLogError -Path $LogPath -Component 'Client' -RunId $RunId -ErrorKey 'Toolkit'
-            Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId -Message 'Dialog result: Acknowledge.' -MessageId $row.MessageId
+            Write-ToastLog -Path $LogPath -Level Info -Component 'Client' -RunId $RunId `
+                -Message "Dialog result: Acknowledge. Details=$messageDetails" -MessageId $row.MessageId
         }
         $state.Read = $true
         $state.ShowCount++

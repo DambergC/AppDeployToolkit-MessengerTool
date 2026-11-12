@@ -106,6 +106,59 @@ CREATE INDEX IX_ToastMessage_Polling
     ON dbo.ToastMessage(GroupId, ExpiresUtc, MessageId)
     INCLUDE (Title, Subtitle, Body, AcknowledgeButtonText, RepeatIntervalSeconds, RepeatCount)
     WHERE IsCancelled = 0;
+
+CREATE TABLE dbo.ToastMessageAudit (
+    AuditId bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_ToastMessageAudit PRIMARY KEY,
+    EventType varchar(6) NOT NULL CONSTRAINT CK_ToastMessageAudit_EventType CHECK (EventType IN (''INSERT'', ''UPDATE'', ''DELETE'')),
+    EventUtc datetime2(7) NOT NULL CONSTRAINT DF_ToastMessageAudit_EventUtc DEFAULT (SYSUTCDATETIME()),
+    SqlUser nvarchar(128) NOT NULL,
+    SqlServer nvarchar(128) NOT NULL,
+    SenderHost nvarchar(128) NULL,
+    MessageId bigint NOT NULL,
+    GroupId int NOT NULL,
+    GroupName nvarchar(128) NOT NULL,
+    Title nvarchar(200) NOT NULL,
+    Subtitle nvarchar(200) NULL,
+    Body nvarchar(4000) NOT NULL,
+    AcknowledgeButtonText nvarchar(200) NOT NULL,
+    CreatedUtc datetime2(7) NOT NULL,
+    ExpiresUtc datetime2(7) NOT NULL,
+    RepeatIntervalSeconds int NULL,
+    RepeatCount int NULL,
+    IsCancelled bit NOT NULL
+);
+CREATE INDEX IX_ToastMessageAudit_Message ON dbo.ToastMessageAudit(MessageId, AuditId);
+';
+
+    EXEC sys.sp_executesql N'
+CREATE TRIGGER dbo.tr_ToastMessage_Audit ON dbo.ToastMessage
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT dbo.ToastMessageAudit (
+        EventType, SqlUser, SqlServer, SenderHost, MessageId, GroupId, GroupName,
+        Title, Subtitle, Body, AcknowledgeButtonText, CreatedUtc, ExpiresUtc,
+        RepeatIntervalSeconds, RepeatCount, IsCancelled
+    )
+    SELECT CASE WHEN d.MessageId IS NULL THEN ''INSERT'' ELSE ''UPDATE'' END,
+        ORIGINAL_LOGIN(), CONVERT(nvarchar(128), SERVERPROPERTY(''ServerName'')), HOST_NAME(),
+        i.MessageId, i.GroupId, g.GroupName, i.Title, i.Subtitle, i.Body,
+        i.AcknowledgeButtonText, i.CreatedUtc, i.ExpiresUtc,
+        i.RepeatIntervalSeconds, i.RepeatCount, i.IsCancelled
+    FROM inserted AS i
+    LEFT JOIN deleted AS d ON d.MessageId = i.MessageId
+    INNER JOIN dbo.ToastGroup AS g ON g.GroupId = i.GroupId
+    UNION ALL
+    SELECT ''DELETE'',
+        ORIGINAL_LOGIN(), CONVERT(nvarchar(128), SERVERPROPERTY(''ServerName'')), HOST_NAME(),
+        d.MessageId, d.GroupId, g.GroupName, d.Title, d.Subtitle, d.Body,
+        d.AcknowledgeButtonText, d.CreatedUtc, d.ExpiresUtc,
+        d.RepeatIntervalSeconds, d.RepeatCount, d.IsCancelled
+    FROM deleted AS d
+    INNER JOIN dbo.ToastGroup AS g ON g.GroupId = d.GroupId
+    WHERE NOT EXISTS (SELECT 1 FROM inserted AS i WHERE i.MessageId = d.MessageId);
+END;
 ';
 
     EXEC sys.sp_executesql N'
@@ -219,6 +272,7 @@ GRANT SELECT, INSERT ON OBJECT::dbo.ToastGroup TO ToastMessageAdmin;
 GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClient TO ToastMessageAdmin;
 GRANT SELECT, INSERT, DELETE ON OBJECT::dbo.ToastClientGroup TO ToastMessageAdmin;
 GRANT SELECT, INSERT, UPDATE, DELETE ON OBJECT::dbo.ToastMessageTemplate TO ToastMessageAdmin;
+GRANT SELECT ON OBJECT::dbo.ToastMessageAudit TO ToastMessageAdmin;
 ';
 
     COMMIT TRANSACTION;
