@@ -29,13 +29,17 @@ transaktioner lämnar ingen historik. Misslyckade sändningsförsök finns bara 
 serverns lokala logg. Malländringar och AD-import loggas inte i denna tabell.
 
 Varje rad innehåller `EventType`, `EventUtc` (datum och klockslag i UTC),
-`SqlUser` (`ORIGINAL_LOGIN()`, SQL-inloggningen som skickade ändringen),
-`SqlServer`, `SenderHost`, meddelande-ID, grupp-ID/gruppnamn samt en kopia av
+`DomainUser` (Windows-identiteten för PowerShell-processen som skickade ett
+meddelande via `Send-ToastMessage.ps1`), `SqlUser` (`ORIGINAL_LOGIN()`,
+SQL-inloggningen som skickade ändringen), `SqlServer`, `SenderHost`,
+meddelande-ID, grupp-ID/gruppnamn samt en kopia av
 hela meddelandet inklusive giltighet, knapptext och repetitionsinställningar.
 Vid uppdatering sparas värdena efter ändringen, vid borttagning de borttagna
 värdena. Historiken behålls även om meddelandet eller gruppen tas bort.
 `SenderHost` kommer från SQL-klienten och är inte en verifierad identitet.
-Med delade SQL-konton visar `SqlUser` det delade kontot, inte Windows-användaren.
+`DomainUser` sätts av avsändarskriptet och är NULL för ändringar som görs direkt
+i SQL utan motsvarande session-kontext. `SqlUser` visar alltid SQL-inloggningen;
+med delade SQL-konton är detta inte Windows-användaren.
 Klienternas läsning och kvittens loggas enbart lokalt, inte i databasen.
 
 Förstagångsinstallationen inkluderar audit. För en befintlig databas med
@@ -44,15 +48,18 @@ aktuellt meddelandeschema: ta en verifierad backup och kör
 Skriptet ändrar inte gamla meddelanden, procedurer eller klienträttigheter;
 äldre händelser återskapas inte. Kör inte om `Install-ToastDatabase.sql`.
 Om auditobjekten redan finns avbryts uppgraderingen utan ändringar.
+För en databas där audit redan är installerad, kör i stället
+`sql/Update-ToastMessageAuditDomainUser.sql` som DBA för att lägga till
+`DomainUser` utan att ta bort historik.
 
 Rollen `ToastMessageAdmin` får läsa audittabellen men får inga skrivrättigheter
 till den. `ToastClientReader` får ingen åtkomst. Historiken innehåller hela
-meddelandetexten och SQL-identiteten: hantera åtkomst, backup och retention
-enligt era krav. Automatisk gallring ingår inte; en DBA måste planera den
-separat.
+meddelandetexten, Windows-identiteten och SQL-identiteten: hantera åtkomst,
+backup och retention enligt era krav. Automatisk gallring ingår inte; en DBA
+måste planera den separat.
 
 ```sql
-SELECT AuditId, EventType, EventUtc, SqlUser, SqlServer, SenderHost,
+SELECT AuditId, EventType, EventUtc, DomainUser, SqlUser, SqlServer, SenderHost,
        MessageId, GroupId, GroupName, Title, Subtitle, Body,
        AcknowledgeButtonText, CreatedUtc, ExpiresUtc,
        RepeatIntervalSeconds, RepeatCount, IsCancelled

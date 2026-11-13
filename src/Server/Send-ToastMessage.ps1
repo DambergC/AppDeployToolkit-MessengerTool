@@ -79,8 +79,13 @@ if ($CheckSqlPort) {
 }
 $conn = Get-ToastConnectionString $config
 $sqlCredential = Get-ToastSqlCredential $config
+$domainUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+if ([string]::IsNullOrWhiteSpace($domainUser) -or $domainUser.Length -gt 256) {
+    throw 'The current Windows identity must have a non-empty name of at most 256 characters.'
+}
 
 $params = @{
+    DomainUser = $domainUser
     GroupName = $GroupName
     Title = $Title
     Subtitle = $Subtitle
@@ -93,17 +98,25 @@ $params = @{
     RepeatCount = $repeatSettings.RepeatCount
 }
 $sql = @'
-EXEC dbo.usp_QueueToastMessage
-    @GroupName = @GroupName,
-    @Title = @Title,
-    @Subtitle = @Subtitle,
-    @Body = @Body,
-    @AcknowledgeButtonText = @AcknowledgeButtonText,
-    @ExpiresUtc = @ExpiresUtc,
-    @ActiveDuration = @ActiveDuration,
-    @DurationUnit = @DurationUnit,
-    @RepeatIntervalSeconds = @RepeatIntervalSeconds,
-    @RepeatCount = @RepeatCount
+BEGIN TRY
+    EXEC sys.sp_set_session_context @key = N'DomainUser', @value = @DomainUser;
+    EXEC dbo.usp_QueueToastMessage
+        @GroupName = @GroupName,
+        @Title = @Title,
+        @Subtitle = @Subtitle,
+        @Body = @Body,
+        @AcknowledgeButtonText = @AcknowledgeButtonText,
+        @ExpiresUtc = @ExpiresUtc,
+        @ActiveDuration = @ActiveDuration,
+        @DurationUnit = @DurationUnit,
+        @RepeatIntervalSeconds = @RepeatIntervalSeconds,
+        @RepeatCount = @RepeatCount;
+    EXEC sys.sp_set_session_context @key = N'DomainUser', @value = NULL;
+END TRY
+BEGIN CATCH
+    EXEC sys.sp_set_session_context @key = N'DomainUser', @value = NULL;
+    THROW;
+END CATCH
 '@
 $result = Invoke-ToastSql -ConnectionString $conn -SqlCredential $sqlCredential `
     -CommandText $sql -Parameters $params -CommandTimeoutSeconds $config.CommandTimeoutSeconds

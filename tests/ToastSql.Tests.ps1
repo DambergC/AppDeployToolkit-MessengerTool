@@ -1018,10 +1018,12 @@ Describe 'ToastSql module' {
             Mock Invoke-ToastSql { [pscustomobject]@{ MessageId = 42 } }
         }
 
-        It 'sends exactly the ten queue parameters and converts absolute expiry to UTC' {
+        It 'sends the current Windows identity and queue parameters and converts absolute expiry to UTC' {
             & "$PSScriptRoot/../src/Server/Send-ToastMessage.ps1" -ConfigPath admin.psd1 -GroupName IT -Title Title -Subtitle Subtitle -Body Body -ExpiresUtc '2099-01-01T02:00:00+02:00' | Should -Match 'Queued message 42'
             Should -Invoke Invoke-ToastSql -Times 1 -ParameterFilter {
-                $Parameters.Count -eq 10 -and $Parameters.AcknowledgeButtonText -eq 'Stäng' -and
+                $Parameters.Count -eq 11 -and $Parameters.DomainUser -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().Name -and
+                $CommandText -match 'sp_set_session_context' -and $CommandText -match 'THROW' -and
+                $Parameters.AcknowledgeButtonText -eq 'Stäng' -and
                 $Parameters.ExpiresUtc -eq [datetime]'2099-01-01T00:00:00Z' -and $Parameters.ExpiresUtc.Kind -eq [DateTimeKind]::Utc -and
                 $null -eq $Parameters.ActiveDuration -and $null -eq $Parameters.DurationUnit -and
                 $Parameters.Subtitle -eq 'Subtitle' -and $CommandText -notmatch 'Urgent|Scenario|DisplayMode|ButtonArguments'
@@ -1062,7 +1064,8 @@ Describe 'ToastSql module' {
         It 'passes duration calculation to SQL and preserves custom label and repeats' {
             & "$PSScriptRoot/../src/Server/Send-ToastMessage.ps1" -ConfigPath admin.psd1 -GroupName IT -Title Title -Body Body -ActiveDuration 2 -DurationUnit Hours -AcknowledgeButtonText Close -RepeatIntervalMinutes 5 -RepeatCount 3 | Out-Null
             Should -Invoke Invoke-ToastSql -Times 1 -ParameterFilter {
-                $Parameters.Count -eq 10 -and $null -eq $Parameters.ExpiresUtc -and $Parameters.ActiveDuration -eq 2 -and $Parameters.DurationUnit -eq 'Hours' -and
+                $Parameters.Count -eq 11 -and $Parameters.DomainUser -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().Name -and
+                $null -eq $Parameters.ExpiresUtc -and $Parameters.ActiveDuration -eq 2 -and $Parameters.DurationUnit -eq 'Hours' -and
                 $Parameters.AcknowledgeButtonText -eq 'Close' -and $Parameters.RepeatIntervalSeconds -eq 300 -and $Parameters.RepeatCount -eq 3
             }
         }
@@ -1182,6 +1185,8 @@ Describe 'ToastSql module' {
             @([regex]::Matches($text, '(?i)CREATE TABLE dbo\.(\w+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object) |
                 Should -Be @('ToastClient','ToastClientGroup','ToastGroup','ToastMessage','ToastMessageAudit','ToastMessageTemplate')
             $text | Should -Not -Match 'ToastDelivery|LeaseId|LastSeenUtc|IsUrgent|Scenario|DisplayMode|ButtonArguments|ButtonActivationType|AppLogo|HeroImage|\bSound\b|CREATE FUNCTION|CREATE VIEW|ufn_Toast|vw_Toast'
+            $text | Should -Match 'DomainUser nvarchar\(256\) NULL'
+            $text | Should -Match "SESSION_CONTEXT\(N''DomainUser''\)"
             foreach ($name in @('GroupName','Title','Subtitle','Body','AcknowledgeButtonText','ExpiresUtc','ActiveDuration','DurationUnit','RepeatIntervalSeconds','RepeatCount')) {
                 $text | Should -Match "@$name\b"
             }

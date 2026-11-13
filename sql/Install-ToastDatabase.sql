@@ -112,6 +112,7 @@ CREATE TABLE dbo.ToastMessageAudit (
     EventType varchar(6) NOT NULL CONSTRAINT CK_ToastMessageAudit_EventType CHECK (EventType IN (''INSERT'', ''UPDATE'', ''DELETE'')),
     EventUtc datetime2(7) NOT NULL CONSTRAINT DF_ToastMessageAudit_EventUtc DEFAULT (SYSUTCDATETIME()),
     SqlUser nvarchar(128) NOT NULL,
+    DomainUser nvarchar(256) NULL,
     SqlServer nvarchar(128) NOT NULL,
     SenderHost nvarchar(128) NULL,
     MessageId bigint NOT NULL,
@@ -137,12 +138,13 @@ AS
 BEGIN
     SET NOCOUNT ON;
     INSERT dbo.ToastMessageAudit (
-        EventType, SqlUser, SqlServer, SenderHost, MessageId, GroupId, GroupName,
+        EventType, SqlUser, DomainUser, SqlServer, SenderHost, MessageId, GroupId, GroupName,
         Title, Subtitle, Body, AcknowledgeButtonText, CreatedUtc, ExpiresUtc,
         RepeatIntervalSeconds, RepeatCount, IsCancelled
     )
     SELECT CASE WHEN d.MessageId IS NULL THEN ''INSERT'' ELSE ''UPDATE'' END,
-        ORIGINAL_LOGIN(), CONVERT(nvarchar(128), SERVERPROPERTY(''ServerName'')), HOST_NAME(),
+        ORIGINAL_LOGIN(), CONVERT(nvarchar(256), SESSION_CONTEXT(N''DomainUser'')),
+        CONVERT(nvarchar(128), SERVERPROPERTY(''ServerName'')), HOST_NAME(),
         i.MessageId, i.GroupId, g.GroupName, i.Title, i.Subtitle, i.Body,
         i.AcknowledgeButtonText, i.CreatedUtc, i.ExpiresUtc,
         i.RepeatIntervalSeconds, i.RepeatCount, i.IsCancelled
@@ -151,7 +153,8 @@ BEGIN
     INNER JOIN dbo.ToastGroup AS g ON g.GroupId = i.GroupId
     UNION ALL
     SELECT ''DELETE'',
-        ORIGINAL_LOGIN(), CONVERT(nvarchar(128), SERVERPROPERTY(''ServerName'')), HOST_NAME(),
+        ORIGINAL_LOGIN(), CONVERT(nvarchar(256), SESSION_CONTEXT(N''DomainUser'')),
+        CONVERT(nvarchar(128), SERVERPROPERTY(''ServerName'')), HOST_NAME(),
         d.MessageId, d.GroupId, g.GroupName, d.Title, d.Subtitle, d.Body,
         d.AcknowledgeButtonText, d.CreatedUtc, d.ExpiresUtc,
         d.RepeatIntervalSeconds, d.RepeatCount, d.IsCancelled
