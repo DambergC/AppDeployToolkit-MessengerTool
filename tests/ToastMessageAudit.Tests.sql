@@ -16,6 +16,7 @@ BEGIN TRY
     CREATE USER ToastAuditTestAdmin WITHOUT LOGIN;
     ALTER ROLE ToastMessageAdmin ADD MEMBER ToastAuditTestAdmin;
     DECLARE @Queued TABLE (MessageId bigint);
+    EXEC sys.sp_set_session_context @key = N'DomainUser', @value = N'EXAMPLE\ToastAuditTestAdmin';
     EXECUTE AS USER = 'ToastAuditTestAdmin';
     INSERT @Queued
     EXEC dbo.usp_QueueToastMessage @GroupName = @GroupName,
@@ -28,6 +29,7 @@ BEGIN TRY
         OR HAS_PERMS_BY_NAME(N'dbo.ToastMessageAudit', N'OBJECT', N'DELETE') = 1
         THROW 51000, 'Admins must not be granted audit write permissions.', 1;
     REVERT;
+    EXEC sys.sp_set_session_context @key = N'DomainUser', @value = NULL;
     DECLARE @MessageId bigint = (SELECT MessageId FROM @Queued);
     IF (SELECT COUNT(*) FROM dbo.ToastMessageAudit WHERE MessageId = @MessageId) <> 1
         THROW 51001, 'Queueing must create exactly one audit event for the returned MessageId.', 1;
@@ -36,6 +38,7 @@ BEGIN TRY
         WHERE MessageId = @MessageId AND EventType = 'INSERT'
           AND EventUtc BETWEEN @StartedUtc AND SYSUTCDATETIME()
           AND SqlUser = ORIGINAL_LOGIN()
+          AND DomainUser = N'EXAMPLE\ToastAuditTestAdmin'
           AND SqlServer = CONVERT(nvarchar(128), SERVERPROPERTY('ServerName'))
           AND (SenderHost = HOST_NAME() OR (SenderHost IS NULL AND HOST_NAME() IS NULL))
           AND GroupId = @GroupId AND GroupName = @GroupName
