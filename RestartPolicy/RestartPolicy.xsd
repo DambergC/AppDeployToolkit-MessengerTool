@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Text">
+    <xs:restriction base="xs:token">
+      <xs:minLength value="1"/>
+      <xs:maxLength value="4000"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Hours">
+    <xs:restriction base="xs:positiveInteger">
+      <xs:maxInclusive value="8760"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Poll">
+    <xs:restriction base="xs:positiveInteger">
+      <xs:minInclusive value="5"/>
+      <xs:maxInclusive value="3600"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Timeout">
+    <xs:restriction base="xs:positiveInteger">
+      <xs:minInclusive value="10"/>
+      <xs:maxInclusive value="300"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="RestartPolicy">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="ToolkitModulePath" type="Text"/>
+        <xs:element name="RestartAfterHours" type="Hours"/>
+        <xs:element name="PollSeconds" type="Poll"/>
+        <xs:element name="DialogTimeoutSeconds" type="Timeout"/>
+        <xs:element name="Title" type="Text"/>
+        <xs:element name="AcknowledgeButtonText" type="Text"/>
+        <xs:element name="OverdueMessage" type="Text"/>
+        <xs:element name="Reminders">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="Reminder" minOccurs="1" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:simpleContent>
+                    <xs:extension base="Text">
+                      <xs:attribute name="MinutesBefore" type="xs:positiveInteger" use="required"/>
+                    </xs:extension>
+                  </xs:simpleContent>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+    <xs:unique name="UniqueReminderTime">
+      <xs:selector xpath="Reminders/Reminder"/>
+      <xs:field xpath="@MinutesBefore"/>
+    </xs:unique>
+  </xs:element>
+</xs:schema>
