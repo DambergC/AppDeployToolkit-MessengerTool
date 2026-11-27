@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RestartPolicy>
+  <ToolkitModulePath>..\Dependencies\PSAppDeployToolkit\4.1.8\PSAppDeployToolkit.psd1</ToolkitModulePath>
+  <RestartAfterHours>72</RestartAfterHours>
+  <PollSeconds>30</PollSeconds>
+  <DialogTimeoutSeconds>120</DialogTimeoutSeconds>
+  <Title>Omstart av datorn</Title>
+  <AcknowledgeButtonText>Jag har läst</AcknowledgeButtonText>
+  <OverdueMessage>Datorn har nått gränsen för omstart. Spara ditt arbete och välj Start &gt; Av/på &gt; Starta om så snart som möjligt. Ingen automatisk omstart görs.</OverdueMessage>
+  <Reminders>
+    <Reminder MinutesBefore="360">Datorn behöver startas om senast {DeadlineLocal}. Det är nu högst 6 timmar kvar. Planera din omstart och spara ditt arbete.</Reminder>
+    <Reminder MinutesBefore="180">Datorn behöver startas om senast {DeadlineLocal}. Det är nu högst 3 timmar kvar. Spara ditt arbete och starta om via Start &gt; Av/på &gt; Starta om.</Reminder>
+    <Reminder MinutesBefore="30">Datorn behöver startas om senast {DeadlineLocal}. Det är nu högst 30 minuter kvar. Spara ditt arbete och starta om datorn nu.</Reminder>
+  </Reminders>
+</RestartPolicy>

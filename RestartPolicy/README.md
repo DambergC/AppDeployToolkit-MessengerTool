@@ -1,0 +1,118 @@
+# RestartPolicy för Windows 11
+
+Fristående påminnelser om omstart, baserade på datorns senaste Windows-start. Enda gemensamma beroendet med MessengerTool är **PSAppDeployToolkit 4.1.8**. Ingen SQL, AD, MessengerTool-konfiguration eller MessengerTool-modul används. Inga befintliga klienter eller aktiviteter ändras.
+
+**Ingen tvingad eller automatisk omstart görs.** Dialogen har en kvitteringsknapp, precis som MessengerTool. Användaren sparar sitt arbete och väljer **Start > Av/på > Starta om** själv. Detta är en påminnelsepolicy, inte en mekanism som garanterar omstart vid tidsgränsen.
+
+## Standardbeteende
+
+| Tid sedan Windows-start | Meddelande |
+| --- | --- |
+| 66 timmar | Högst 6 timmar kvar till omstartsgränsen |
+| 69 timmar | Högst 3 timmar kvar |
+| 71 timmar 30 minuter | Högst 30 minuter kvar |
+| 72 timmar eller mer | Gränsen har passerats: starta om så snart som möjligt |
+
+Tiden räknas från `Win32_OperatingSystem.LastBootUpTime`, inklusive vila och viloläge, inte från inloggningen eller skriptstarten. Windows Snabbstart kan bevara starttiden vid avstängning/påslagning; välj **Starta om** för att återställa tiden.
+
+Skriptet kontrollerar som standard var 30:e sekund. En varning visas vid nästa kontroll efter tröskeln, inte garanterat exakt på sekunden. Om datorn vaknar eller användaren loggar in sent visas **endast det mest aktuella steget**, inte en kö av gamla varningar. Utan aktiv användarsession väntar skriptet; det startar inte om datorn.
+
+Varje steg kvitteras högst en gång **per dator och Windows-start**, i `HKLM:\SOFTWARE\RestartPolicy`. Kvitteringar gäller därmed även vid användarbyte och omstart av skriptet. En riktig omstart återställer policyn automatiskt. Kvittering av en varning skjuter inte upp nästa steg eller omstartsgränsen. Efter kvitterad slutuppmaning visas inga fler meddelanden förrän nästa Windows-start.
+
+En dialog stängs efter `DialogTimeoutSeconds` om den inte kvitteras. Timeout räknas **inte** som kvittering: skriptet försöker igen efter nästa pollintervall, eller visar nästa steg om dess tröskel har passerats.
+
+## Krav och installation
+
+- Windows 11, 64-bitars Windows PowerShell 5.1, samt lokal administratör vid installation.
+- Hela denna mapp inklusive XSD-filen och en lokalt paketerad, oförändrad PSAppDeployToolkit **4.1.8**. Ingen hämtning sker vid körning.
+- Skriptet körs som **SYSTEM**. Toolkitets `Get-ADTLoggedOnUser`, `Initialize-ADTModule`, `Get-ADTEnvironmentTable` och `Show-ADTInstallationPrompt` hanterar dialogen i en aktiv användarsession på samma sätt som MessengerTool. Ingen egen toast-/UI-motor eller användarprocessstart implementeras.
+
+Exempel på placering (toolkitets övriga filer och underkataloger måste också finnas):
+
+```text
+C:\Program Files\AppDeployToolkit-MessengerTool\
+  RestartPolicy\
+    Start-RestartPolicy.ps1
+    Register-RestartPolicyTask.ps1
+    RestartPolicy.psm1
+    RestartPolicy.xml
+    RestartPolicy.xsd
+  Dependencies\
+    PSAppDeployToolkit\
+      4.1.8\
+        PSAppDeployToolkit.psd1
+        ...
+```
+
+Mappen kan också distribueras helt separat från MessengerTool; ange då den lokala toolkit-sökvägen i XML. Skydda **kod, XML, XSD och hela toolkit-katalogen** med fil-ACL: endast SYSTEM och administratörer får ändra dem, vanliga användare endast läsa/köra. Använd inte en användarskrivbar sökväg för något som SYSTEM laddar. Standard-ACL under Program Files är en lämplig utgångspunkt. Lämna HKLM-nyckeln skrivskyddad för vanliga användare.
+
+Anpassa XML-filen och kör sedan i **förhöjd, 64-bitars Windows PowerShell**:
+
+```powershell
+$root = 'C:\Program Files\AppDeployToolkit-MessengerTool\RestartPolicy'
+& "$root\Register-RestartPolicyTask.ps1" -ConfigPath "$root\RestartPolicy.xml"
+```
+
+Registreringen skapar/ersätter endast aktiviteten `RestartPolicy` och startar den direkt. Den körs som SYSTEM vid datorstart och inloggning, även på batteri, utan tidsgräns. Parallella instanser avvisas. Aktivitetsschemaläggaren försöker starta om processen tre gånger med en minuts mellanrum vid fel. Kvarstående fel måste åtgärdas av administratör; ingen annan omstartsmekanism tar över.
+
+Förhandsgranska registreringen med `-WhatIf`. Befintlig aktivitet med samma namn ersätts vid vanlig registrering; välj `-TaskName` om ett annat namn behövs. Flera parallella policyinstanser på samma dator stöds inte.
+
+## XML-inställningar
+
+`RestartPolicy.xml` läses och valideras mot `RestartPolicy.xsd` **vid processstart**. Ogiltig XML eller ogiltiga värden stoppar start med fel; inga tysta standardvärden används. DTD och externa entiteter tillåts inte. Behåll elementens ordning enligt exempelfilen.
+
+| Inställning | Betydelse |
+| --- | --- |
+| `ToolkitModulePath` | Sökväg till toolkitets manifest. Relativ sökväg räknas från XML-filens katalog, inte aktuell arbetskatalog. |
+| `RestartAfterHours` | Positivt heltal, 1–8760 timmar från Windows-start; standard 72. |
+| `PollSeconds` | Kontrollintervall, heltal 5–3600 sekunder; standard 30. |
+| `DialogTimeoutSeconds` | Dialogens timeout, heltal 10–300 sekunder; standard 120. Får inte överstiga toolkitets `UI.DefaultTimeout`. |
+| `Title` | Dialogrubrik. |
+| `AcknowledgeButtonText` | Kvitteringsknapp, 1–200 tecken. `Timeout` är reserverat av toolkit. |
+| `OverdueMessage` | Text när omstartsgränsen har nåtts. |
+| `Reminders/Reminder` | En eller flera varningar. Texten är meddelandet; attributet `MinutesBefore` är antalet minuter **före** gränsen. |
+
+`MinutesBefore` ska vara unika positiva heltal, högst 1440 (sista dygnet) och mindre än `RestartAfterHours × 60`. XML-ordningen på varningarna saknar betydelse. Standardvärdena är **360, 180 och 30**. Ange inte 66/69/71,5 här: dessa är förfluten tid i timmar, inte återstående minuter.
+
+Texterna kan innehålla `{DeadlineLocal}`, som ersätts med den verkliga tidsgränsen i lokal tid (`yyyy-MM-dd HH:mm`). Ingen PowerShell-kod utvärderas från XML och meddelandenas toolkit-markup neutraliseras. XML-specialtecken måste skrivas som till exempel `&amp;` och `&lt;`. Spara XML som UTF-8 så att svenska tecken bevaras även i Windows PowerShell 5.1.
+
+Efter XML-ändring:
+
+```powershell
+Stop-ScheduledTask -TaskName 'RestartPolicy'
+Start-ScheduledTask -TaskName 'RestartPolicy'
+```
+
+Kvitteringar sparas över processomstarter. Ändringar av policy/tider återvisar inte redan kvitterade eller mindre brådskande steg under samma Windows-start. Vid avsiktlig återställning för ett pilottest: stoppa aktiviteten, ta bort **endast** `HKLM:\SOFTWARE\RestartPolicy` som administratör och starta aktiviteten igen.
+
+## Loggar, kontroll och test
+
+Dialogresultat och körfel loggas via `Write-ADTLogEntry` med källan `RestartPolicy` i filen `RestartPolicy.log` under toolkitets `Toolkit.LogPath` (standard `C:\Windows\Logs\Software`). Loggfil och loggformat anges uttryckligen eftersom ingen installationssession öppnas. Fel före logginitiering skrivs som terminerande PowerShell-fel och ger misslyckad aktivitet. Skriptet stoppar vid körfel i stället för att markera varningen som kvitterad.
+
+```powershell
+Get-ScheduledTask -TaskName 'RestartPolicy'
+Get-ScheduledTaskInfo -TaskName 'RestartPolicy'
+Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\RestartPolicy' -ErrorAction SilentlyContinue
+```
+
+För en begränsad engångskörning kan `Start-RestartPolicy.ps1 -ConfigPath <sökväg> -Once` användas i en separat SYSTEM-process. Stoppa den ordinarie aktiviteten först. Verktyget avvisar vanlig användar-/administratörskörning för att inte blanda behörigheter eller läsa olika registervyer.
+
+Kör de isolerade Pester 5-testerna manuellt från repots rot:
+
+```powershell
+Invoke-Pester -Path .\RestartPolicy\RestartPolicy.Tests.ps1 -CI
+Invoke-ScriptAnalyzer -Path .\RestartPolicy -Recurse -Severity Error
+```
+
+Testerna simulerar klocka, register och toolkit för att täcka exakta tidsgränser, XML-fel, sena inloggningar, kvitteringar och sessionsbryggan. De ändrar inte datorns starttid eller dess riktiga HKLM-status. Repots befintliga CI ändras inte och söker endast i sina befintliga testkataloger. Verifiera därför även på en Windows 11-pilot: interaktiv dialog från SYSTEM, ingen inloggad användare, användarbyte, vila, processomstart och riktig Windows-omstart. Detta kan inte ersättas av mockade tester.
+
+## Avinstallation
+
+```powershell
+Stop-ScheduledTask -TaskName 'RestartPolicy'
+Unregister-ScheduledTask -TaskName 'RestartPolicy' -Confirm:$false
+# Valfritt: ta bort endast policyns kvitteringar.
+Remove-Item -LiteralPath 'HKLM:\SOFTWARE\RestartPolicy' -Recurse -Force
+```
+
+Ta därefter bort den separat distribuerade `RestartPolicy`-mappen enligt er distributionsrutin. Ta **inte** bort den delade toolkit-katalogen om MessengerTool fortfarande använder den.
