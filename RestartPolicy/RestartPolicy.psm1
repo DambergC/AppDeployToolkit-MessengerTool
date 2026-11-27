@@ -42,11 +42,13 @@ function Import-RestartPolicy {
     if (-not [System.IO.Path]::IsPathRooted($toolkitPath)) {
         $toolkitPath = Join-Path (Split-Path -Parent $resolvedPath) $toolkitPath
     }
+    $restartPromptNode = $root.SelectSingleNode('UseToolkitRestartPrompt')
     [pscustomobject]@{
         ToolkitModulePath = $toolkitPath
         RestartAfterHours = $hours
         PollSeconds = [int]$root.PollSeconds
         DialogTimeoutSeconds = [int]$root.DialogTimeoutSeconds
+        UseToolkitRestartPrompt = ($null -ne $restartPromptNode -and [System.Xml.XmlConvert]::ToBoolean($restartPromptNode.InnerText.Trim()))
         Title = $root.Title.Trim()
         AcknowledgeButtonText = $button
         OverdueMessage = $root.OverdueMessage.Trim()
@@ -101,6 +103,14 @@ function Show-RestartPolicyReminder {
         $_.IsActiveUserSession -and $_.SessionId -eq $target.SessionId -and $_.SID -eq $target.SID
     }).Count -eq 0) {
         return 'NoActiveSession'
+    }
+
+    $lastReminder = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum
+    if ($Policy.UseToolkitRestartPrompt -and $Stage.MinutesBefore -le $lastReminder) {
+        Show-ADTInstallationRestartPrompt -Title $Policy.Title.Replace('[', ('[' + [char]0x2060)) `
+            -Subtitle 'RestartPolicy' -CountdownSeconds ($lastReminder * 60) `
+            -CountdownNoHideSeconds 30 -ErrorAction Stop
+        return 'RestartPromptReturned'
     }
 
     $parameters = @{

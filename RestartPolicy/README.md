@@ -2,7 +2,7 @@
 
 Fristående påminnelser om omstart, baserade på datorns senaste Windows-start. Enda gemensamma beroendet med MessengerTool är **PSAppDeployToolkit 4.1.8**. Ingen SQL, AD, MessengerTool-konfiguration eller MessengerTool-modul används. Inga befintliga klienter eller aktiviteter ändras.
 
-**Ingen tvingad eller automatisk omstart görs.** Dialogen har en kvitteringsknapp, precis som MessengerTool. Användaren sparar sitt arbete och väljer **Start > Av/på > Starta om** själv. Detta är en påminnelsepolicy, inte en mekanism som garanterar omstart vid tidsgränsen.
+**Som standard görs ingen tvingad eller automatisk omstart.** Dialogen har en kvitteringsknapp, precis som MessengerTool. Användaren sparar sitt arbete och väljer **Start > Av/på > Starta om** själv. Alternativet `UseToolkitRestartPrompt` kan i stället aktivera toolkitets omstartsdialog med automatisk omstart; se nedan.
 
 ## Standardbeteende
 
@@ -15,17 +15,17 @@ Fristående påminnelser om omstart, baserade på datorns senaste Windows-start.
 
 Tiden räknas från `Win32_OperatingSystem.LastBootUpTime`, inklusive vila och viloläge, inte från inloggningen eller skriptstarten. Windows Snabbstart kan bevara starttiden vid avstängning/påslagning; välj **Starta om** för att återställa tiden.
 
-Skriptet kontrollerar som standard var 30:e sekund. En varning visas vid nästa kontroll efter tröskeln, inte garanterat exakt på sekunden. Om datorn vaknar eller användaren loggar in sent visas **endast det mest aktuella steget**, inte en kö av gamla varningar. Utan aktiv användarsession väntar skriptet; det startar inte om datorn.
+Skriptet kontrollerar som standard var 30:e sekund. En varning visas vid nästa kontroll efter tröskeln, inte garanterat exakt på sekunden. Om datorn vaknar eller användaren loggar in sent visas **endast det mest aktuella steget**, inte en kö av gamla varningar. Utan aktiv användarsession väntar skriptet.
 
 Varje steg kvitteras högst en gång **per dator och Windows-start**, i `HKLM:\SOFTWARE\RestartPolicy`. Kvitteringar gäller därmed även vid användarbyte och omstart av skriptet. En riktig omstart återställer policyn automatiskt. Kvittering av en varning skjuter inte upp nästa steg eller omstartsgränsen. Efter kvitterad slutuppmaning visas inga fler meddelanden förrän nästa Windows-start.
 
-En dialog stängs efter `DialogTimeoutSeconds` om den inte kvitteras. Timeout räknas **inte** som kvittering: skriptet försöker igen efter nästa pollintervall, eller visar nästa steg om dess tröskel har passerats.
+En vanlig dialog stängs efter `DialogTimeoutSeconds` om den inte kvitteras. Timeout räknas **inte** som kvittering: skriptet försöker igen efter nästa pollintervall, eller visar nästa steg om dess tröskel har passerats.
 
 ## Krav och installation
 
 - Windows 11, 64-bitars Windows PowerShell 5.1, samt lokal administratör vid installation.
 - Hela denna mapp inklusive XSD-filen och en lokalt paketerad, oförändrad PSAppDeployToolkit **4.1.8**. Ingen hämtning sker vid körning.
-- Skriptet körs som **SYSTEM**. Toolkitets `Get-ADTLoggedOnUser`, `Initialize-ADTModule`, `Get-ADTEnvironmentTable` och `Show-ADTInstallationPrompt` hanterar dialogen i en aktiv användarsession på samma sätt som MessengerTool. Ingen egen toast-/UI-motor eller användarprocessstart implementeras.
+- Skriptet körs som **SYSTEM**. Toolkitets `Get-ADTLoggedOnUser`, `Initialize-ADTModule`, `Get-ADTEnvironmentTable`, `Show-ADTInstallationPrompt` och `Show-ADTInstallationRestartPrompt` hanterar dialogerna. Ingen egen toast-/UI-motor eller användarprocessstart implementeras.
 
 Exempel på placering (toolkitets övriga filer och underkataloger måste också finnas):
 
@@ -59,7 +59,7 @@ Förhandsgranska registreringen med `-WhatIf`. Befintlig aktivitet med samma nam
 
 ## XML-inställningar
 
-`RestartPolicy.xml` läses och valideras mot `RestartPolicy.xsd` **vid processstart**. Ogiltig XML eller ogiltiga värden stoppar start med fel; inga tysta standardvärden används. DTD och externa entiteter tillåts inte. Behåll elementens ordning enligt exempelfilen.
+`RestartPolicy.xml` läses och valideras mot `RestartPolicy.xsd` **vid processstart**. Ogiltig XML eller ogiltiga värden stoppar start med fel. DTD och externa entiteter tillåts inte. Behåll elementens ordning enligt exempelfilen.
 
 | Inställning | Betydelse |
 | --- | --- |
@@ -67,6 +67,7 @@ Förhandsgranska registreringen med `-WhatIf`. Befintlig aktivitet med samma nam
 | `RestartAfterHours` | Positivt heltal, 1–8760 timmar från Windows-start; standard 72. |
 | `PollSeconds` | Kontrollintervall, heltal 5–3600 sekunder; standard 30. |
 | `DialogTimeoutSeconds` | Dialogens timeout, heltal 10–300 sekunder; standard 120. Får inte överstiga toolkitets `UI.DefaultTimeout`. |
+| `UseToolkitRestartPrompt` | `true` aktiverar toolkitets omstartsdialog för sista varningen och efter tidsgränsen. `false` eller utelämnat behåller befintligt beteende. |
 | `Title` | Dialogrubrik. |
 | `AcknowledgeButtonText` | Kvitteringsknapp, 1–200 tecken. `Timeout` är reserverat av toolkit. |
 | `OverdueMessage` | Text när omstartsgränsen har nåtts. |
@@ -74,7 +75,11 @@ Förhandsgranska registreringen med `-WhatIf`. Befintlig aktivitet med samma nam
 
 `MinutesBefore` ska vara unika positiva heltal, högst 1440 (sista dygnet) och mindre än `RestartAfterHours × 60`. XML-ordningen på varningarna saknar betydelse. Standardvärdena är **360, 180 och 30**. Ange inte 66/69/71,5 här: dessa är förfluten tid i timmar, inte återstående minuter.
 
-Texterna kan innehålla `{DeadlineLocal}`, som ersätts med den verkliga tidsgränsen i lokal tid (`yyyy-MM-dd HH:mm`). Ingen PowerShell-kod utvärderas från XML och meddelandenas toolkit-markup neutraliseras. XML-specialtecken måste skrivas som till exempel `&amp;` och `&lt;`. Spara XML som UTF-8 så att svenska tecken bevaras även i Windows PowerShell 5.1.
+Med `UseToolkitRestartPrompt` satt till `true` används `Show-ADTInstallationRestartPrompt` från den varning som har lägst `MinutesBefore`, även om gränsen redan passerats innan dialogen kan visas. **Datorn kan startas om automatiskt när nedräkningen löper ut**, så användaren måste spara sitt arbete. Nedräkningen är hela detta antal minuter från dialogens start (30 minuter med standardvärdena), inte återstående tid till gränsen; vid sen inloggning eller vila kan omstarten därför ske efter gränsen. De sista 30 sekunderna kan dialogen inte döljas. Toolkitets egna lokaliserade texter används, inte `Reminder`, `OverdueMessage`, `AcknowledgeButtonText` eller `DialogTimeoutSeconds`.
+
+Skriptet väntar om ingen aktiv session finns vid kontrollen. Toolkitet kan dock starta om utan dialog om sessionen försvinner mellan kontrollen och toolkitets egen sessionskontroll. Omstartsdialogen returnerar ingen kvittens till skriptet; den markeras därför inte som kvitterad, och om den återvänder utan att datorn startats om försöker skriptet igen vid nästa kontroll.
+
+Texterna i vanliga dialoger kan innehålla `{DeadlineLocal}`, som ersätts med den verkliga tidsgränsen i lokal tid (`yyyy-MM-dd HH:mm`). Ingen PowerShell-kod utvärderas från XML och meddelandenas toolkit-markup neutraliseras. XML-specialtecken måste skrivas som till exempel `&amp;` och `&lt;`. Spara XML som UTF-8 så att svenska tecken bevaras även i Windows PowerShell 5.1.
 
 Efter XML-ändring:
 
@@ -104,7 +109,7 @@ Invoke-Pester -Path .\RestartPolicy\RestartPolicy.Tests.ps1 -CI
 Invoke-ScriptAnalyzer -Path .\RestartPolicy -Recurse -Severity Error
 ```
 
-Testerna simulerar klocka, register och toolkit för att täcka exakta tidsgränser, XML-fel, sena inloggningar, kvitteringar och sessionsbryggan. De ändrar inte datorns starttid eller dess riktiga HKLM-status. Repots befintliga CI ändras inte och söker endast i sina befintliga testkataloger. Verifiera därför även på en Windows 11-pilot: interaktiv dialog från SYSTEM, ingen inloggad användare, användarbyte, vila, processomstart och riktig Windows-omstart. Detta kan inte ersättas av mockade tester.
+Testerna simulerar klocka, register och toolkit för att täcka exakta tidsgränser, XML-fel, sena inloggningar, kvitteringar och sessionsbryggan. De ändrar inte datorns starttid eller dess riktiga HKLM-status och körs även i repots CI. Verifiera dessutom på en Windows 11-pilot: interaktiv dialog från SYSTEM, ingen inloggad användare, användarbyte, vila, processomstart och riktig Windows-omstart. Detta kan inte ersättas av mockade tester.
 
 ## Avinstallation
 

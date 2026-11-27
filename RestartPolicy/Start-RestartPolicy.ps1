@@ -23,7 +23,7 @@ if ($manifest.Name -ne 'PSAppDeployToolkit' -or $manifest.Version -ne [version]'
     throw 'RestartPolicy requires the locally packaged PSAppDeployToolkit 4.1.8 manifest.'
 }
 Import-Module -Name $policy.ToolkitModulePath -Force -ErrorAction Stop
-foreach ($command in @('Show-ADTInstallationPrompt', 'Get-ADTLoggedOnUser', 'Initialize-ADTModule', 'Get-ADTEnvironmentTable', 'Get-ADTConfig', 'Write-ADTLogEntry')) {
+foreach ($command in @('Show-ADTInstallationPrompt', 'Show-ADTInstallationRestartPrompt', 'Get-ADTLoggedOnUser', 'Initialize-ADTModule', 'Get-ADTEnvironmentTable', 'Get-ADTConfig', 'Write-ADTLogEntry')) {
     $null = Get-Command -Name $command -Module PSAppDeployToolkit -ErrorAction Stop
 }
 Initialize-ADTModule -ErrorAction Stop
@@ -47,7 +47,7 @@ try {
         $ownsMutex = $true
     }
     if (-not $ownsMutex) { throw 'Another RestartPolicy instance is already running.' }
-    Write-ADTLogEntry @logParameters -Message 'RestartPolicy started. This policy does not restart the computer.'
+    Write-ADTLogEntry @logParameters -Message "RestartPolicy started. Toolkit restart prompt enabled: $($policy.UseToolkitRestartPrompt)."
     do {
         try {
             # LastBootUpTime also includes sleep/hibernate time and is not reset by Fast Startup.

@@ -4,6 +4,7 @@
   <RestartAfterHours>72</RestartAfterHours>
   <PollSeconds>30</PollSeconds>
   <DialogTimeoutSeconds>120</DialogTimeoutSeconds>
+  <UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>
   <Title>Omstart av datorn</Title>
   <AcknowledgeButtonText>Jag har läst</AcknowledgeButtonText>
   <OverdueMessage>Datorn har nått gränsen för omstart. Spara ditt arbete och välj Start &gt; Av/på &gt; Starta om så snart som möjligt. Ingen automatisk omstart görs.</OverdueMessage>

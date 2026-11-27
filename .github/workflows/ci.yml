@@ -13,7 +13,7 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $r = 'src','deploy' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Error }
+          $r = 'src','deploy','RestartPolicy' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Error }
           $r | Format-Table
           if ($r) { exit 1 }
       - name: Pester
@@ -21,4 +21,4 @@ jobs:
         run: |
           Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999.999 -Force -Scope CurrentUser -SkipPublisherCheck
           Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999.999
-          Invoke-Pester -Path tests -CI
+          Invoke-Pester -Path tests, RestartPolicy/RestartPolicy.Tests.ps1 -CI
