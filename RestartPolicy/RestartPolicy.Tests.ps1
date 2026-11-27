@@ -14,6 +14,7 @@ Describe 'RestartPolicy XML configuration' {
         @{ Name = 'unknown field'; Old = '</RestartPolicy>'; New = '<Unknown>1</Unknown></RestartPolicy>' }
         @{ Name = 'blank title'; Old = '<Title>Omstart av datorn</Title>'; New = '<Title> </Title>' }
         @{ Name = 'long timeout'; Old = '<DialogTimeoutSeconds>120</DialogTimeoutSeconds>'; New = '<DialogTimeoutSeconds>301</DialogTimeoutSeconds>' }
+        @{ Name = 'invalid restart prompt option'; Old = '<UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>'; New = '<UseToolkitRestartPrompt>yes</UseToolkitRestartPrompt>' }
         @{ Name = 'duplicate reminder'; Old = 'MinutesBefore="180"'; New = 'MinutesBefore="360"' }
         @{ Name = 'negative reminder'; Old = 'MinutesBefore="180"'; New = 'MinutesBefore="-1"' }
         @{ Name = 'outside last day'; Old = 'MinutesBefore="360"'; New = 'MinutesBefore="1441"' }
@@ -34,6 +35,17 @@ Describe 'RestartPolicy XML configuration' {
 
     It 'resolves a relative toolkit path against the configuration directory' {
         $script:policy.ToolkitModulePath | Should -Be (Join-Path $PSScriptRoot '..\Dependencies\PSAppDeployToolkit\4.1.8\PSAppDeployToolkit.psd1')
+    }
+
+    It 'supports the restart prompt option and defaults to false for older configurations' {
+        $script:policy.UseToolkitRestartPrompt | Should -BeFalse
+        $path = Join-Path $TestDrive 'prompt.xml'
+        $script:exampleXml.Replace('<UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>', '<UseToolkitRestartPrompt>true</UseToolkitRestartPrompt>') |
+            Set-Content -LiteralPath $path -Encoding UTF8
+        (Import-RestartPolicy -Path $path).UseToolkitRestartPrompt | Should -BeTrue
+        $script:exampleXml.Replace('<UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>', '') |
+            Set-Content -LiteralPath $path -Encoding UTF8
+        (Import-RestartPolicy -Path $path).UseToolkitRestartPrompt | Should -BeFalse
     }
 
     It 'uses configured times and text rather than hardcoded defaults' {
@@ -102,6 +114,10 @@ Describe 'RestartPolicy toolkit session bridge' {
                 [CmdletBinding()]
                 param($Title, $Subtitle, $Message, $ButtonRightText, $Timeout, [switch]$NoExitOnTimeout)
             }
+            function script:Show-ADTInstallationRestartPrompt {
+                [CmdletBinding()]
+                param($Title, $Subtitle, $CountdownSeconds, $CountdownNoHideSeconds)
+            }
         }
     }
 
@@ -114,6 +130,7 @@ Describe 'RestartPolicy toolkit session bridge' {
             @{ RunAsActiveUser = [pscustomobject]@{ SessionId = 1; SID = 'test-sid' } }
         }
         Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { $ButtonRightText }
+        Mock Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy {}
         $script:stage = Get-RestartPolicyStage -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(66)
     }
 
@@ -154,6 +171,62 @@ Describe 'RestartPolicy toolkit session bridge' {
     It 'surfaces toolkit errors' {
         Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { throw 'dialog failed' }
         { Show-RestartPolicyReminder -Policy $script:policy -Stage $script:stage } | Should -Throw '*dialog failed*'
+    }
+
+    It 'uses the restart prompt only for the last reminder or overdue stage when enabled: <Hours>' -ForEach @(
+        @{ Hours = 71.5 }
+        @{ Hours = 72 }
+        @{ Hours = 100 }
+    ) {
+        $enabled = $script:policy.PSObject.Copy()
+        $enabled.UseToolkitRestartPrompt = $true
+        $stage = Get-RestartPolicyStage -Policy $enabled -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours($Hours)
+        Show-RestartPolicyReminder -Policy $enabled -Stage $stage | Should -Be 'RestartPromptReturned'
+        Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 1 -Exactly -ParameterFilter {
+            $Title -eq 'Omstart av datorn' -and $Subtitle -eq 'RestartPolicy' -and
+            $CountdownSeconds -eq 1800 -and $CountdownNoHideSeconds -eq 30
+        }
+        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 0
+    }
+
+    It 'retains the normal prompt for earlier stages and when the option is disabled' {
+        $enabled = $script:policy.PSObject.Copy()
+        $enabled.UseToolkitRestartPrompt = $true
+        Show-RestartPolicyReminder -Policy $enabled -Stage $script:stage | Should -Be 'Acknowledged'
+        $last = Get-RestartPolicyStage -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(71.5)
+        Show-RestartPolicyReminder -Policy $script:policy -Stage $last | Should -Be 'Acknowledged'
+        Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
+    }
+
+    It 'uses the smallest configured reminder for the countdown regardless of XML order' {
+        $enabled = $script:policy.PSObject.Copy()
+        $enabled.UseToolkitRestartPrompt = $true
+        $enabled.Reminders = @(
+            [pscustomobject]@{ MinutesBefore = 5; Message = 'Last' }
+            [pscustomobject]@{ MinutesBefore = 60; Message = 'First' }
+        )
+        $last = Get-RestartPolicyStage -Policy $enabled -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(72)
+        Show-RestartPolicyReminder -Policy $enabled -Stage $last | Should -Be 'RestartPromptReturned'
+        Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 1 -Exactly -ParameterFilter {
+            $CountdownSeconds -eq 300
+        }
+    }
+
+    It 'does not launch the restart prompt without an active session' {
+        $enabled = $script:policy.PSObject.Copy()
+        $enabled.UseToolkitRestartPrompt = $true
+        Mock Get-ADTLoggedOnUser -ModuleName RestartPolicy {}
+        $last = Get-RestartPolicyStage -Policy $enabled -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(71.5)
+        Show-RestartPolicyReminder -Policy $enabled -Stage $last | Should -Be 'NoActiveSession'
+        Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
+    }
+
+    It 'surfaces restart prompt errors' {
+        $enabled = $script:policy.PSObject.Copy()
+        $enabled.UseToolkitRestartPrompt = $true
+        Mock Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy { throw 'restart dialog failed' }
+        $last = Get-RestartPolicyStage -Policy $enabled -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(71.5)
+        { Show-RestartPolicyReminder -Policy $enabled -Stage $last } | Should -Throw '*restart dialog failed*'
     }
 }
 
@@ -198,6 +271,7 @@ Describe 'RestartPolicy per-boot acknowledgement state' {
     It 'does not record an unanswered reminder: <Result>' -ForEach @(
         @{ Result = 'NoActiveSession' }
         @{ Result = 'Timeout' }
+        @{ Result = 'RestartPromptReturned' }
     ) {
         Mock Show-RestartPolicyReminder -ModuleName RestartPolicy { $Result }
         Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(69) |

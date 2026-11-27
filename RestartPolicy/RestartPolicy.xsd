@@ -30,6 +30,7 @@
         <xs:element name="RestartAfterHours" type="Hours"/>
         <xs:element name="PollSeconds" type="Poll"/>
         <xs:element name="DialogTimeoutSeconds" type="Timeout"/>
+        <xs:element name="UseToolkitRestartPrompt" type="xs:boolean" minOccurs="0"/>
         <xs:element name="Title" type="Text"/>
         <xs:element name="AcknowledgeButtonText" type="Text"/>
         <xs:element name="OverdueMessage" type="Text"/>
