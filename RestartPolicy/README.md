@@ -135,13 +135,17 @@ Stop-ScheduledTask -TaskName 'RestartPolicy'
 # Visa ett specifikt konfigurerat steg; 0 visar OverdueMessage.
 & "$root\Start-RestartPolicy.ps1" -ConfigPath "$root\RestartPolicy.xml" -Demo -DemoMinutesBefore 30 -Log
 & "$root\Start-RestartPolicy.ps1" -ConfigPath "$root\RestartPolicy.xml" -Demo -DemoMinutesBefore 0 -Log
-# Visa en säker visuell simulering av omstartsuppmaningen.
+# Visa en statisk bild av toolkitets riktiga omstartsdialog.
 & "$root\Start-RestartPolicy.ps1" -ConfigPath "$root\RestartPolicy.xml" -DemoRestartPrompt -Log
 ```
 
 `-Demo` och `-DemoRestartPrompt` kan inte kombineras och stöds inte som SYSTEM eller via registreringsskriptet. `-DemoMinutesBefore` kräver `-Demo` och ska motsvara ett konfigurerat `MinutesBefore` eller vara 0. Utan stegval visas varningen med högst `MinutesBefore`. XML och toolkit valideras som vanligt; demoläget använder syntetiska tider för meddelandet men **läser inte datorns starttid eller kvitteringar och sparar ingen kvittering**. Den vanliga varningsdemon använder XML-texten även för sista steget när `UseToolkitRestartPrompt` är `true`.
 
-**Ingen demo startar om datorn.** PSAppDeployToolkit 4.1.8 saknar säker förhandsvisning av den riktiga omstartsdialogen. `-DemoRestartPrompt` använder därför toolkitets vanliga dialog med samma konfigurerade titel, tydlig DEMO-märkning, simulerade knappar och den konfigurerade nedräkningstiden som text. Den är **inte en exakt kopia av omstartsdialogen och har ingen aktiv nedräkning**; även knappen `Starta om (demo)` stänger bara demon. XML behöver inte ändras för att välja demo. `-Log` märker demohändelser separat som `DEMO`, och timeout, saknad session och fel rapporteras som vanligt.
+**Ingen demo startar om datorn.** `-DemoRestartPrompt` renderar en **statisk bild av den lokalt paketerade omstartsdialogen**, med konfigurerad titel, toolkitets språk, grafik, dialogstil (`Fluent` eller `Classic`) och nedräkningens startvärde. Bilden visas i ett separat, tydligt DEMO-märkt fönster. Knapparna i bilden är inte interaktiva och nedräkningen är inte aktiv; endast förhandsvisningens `Stäng demo`-knapp fungerar.
+
+Den riktiga dialogen visas aldrig: dess inaktiva timer avvecklas före rendering, kontrollträdet omvandlas till en oföränderlig bild och originaldialogen stängs/avvecklas innan bildfönstret visas. Ingen tyst omstartsväg i `Show-ADTInstallationRestartPrompt` anropas. Eftersom toolkitet inte har ett offentligt API för detta används dess interna, versionslåsta **4.1.8**-konstruktorer endast för bildrenderingen; toolkitets filer ändras inte. API-/renderingsfel stoppar demon med fel, utan att falla tillbaka till en aktiv omstartsdialog.
+
+Omstartsförhandsvisningen körs på den manuella PowerShell-sessionens skrivbord och kräver **STA**. Starta vid behov `powershell.exe -STA` eller `pwsh.exe -STA` som administratör. XML behöver inte ändras för att välja demo. `-Log` märker demohändelser separat som `DEMO`, och timeout, saknad session och fel rapporteras som vanligt.
 
 Starta aktiviteten igen med `Start-ScheduledTask -TaskName 'RestartPolicy'` när demon är klar. **Då gäller den verkliga policyn igen**, inklusive eventuell automatisk omstart om `UseToolkitRestartPrompt` är `true`.
 
@@ -152,7 +156,7 @@ Invoke-Pester -Path .\RestartPolicy\RestartPolicy.Tests.ps1 -CI
 Invoke-ScriptAnalyzer -Path .\RestartPolicy -Recurse -Severity Error
 ```
 
-Testerna simulerar klocka, register och toolkit för att täcka exakta tidsgränser, XML-fel, sena inloggningar, kvitteringar och sessionsbryggan. De ändrar inte datorns starttid eller dess riktiga HKLM-status och körs även i repots CI. Verifiera dessutom på en Windows 11-pilot: interaktiv dialog från SYSTEM, ingen inloggad användare, användarbyte, vila, processomstart och riktig Windows-omstart. Detta kan inte ersättas av mockade tester.
+Testerna simulerar klocka, register och toolkit för att täcka exakta tidsgränser, XML-fel, sena inloggningar, kvitteringar och sessionsbryggan. Windows-tester renderar dessutom bilder från båda de paketerade omstartsdialogstilarna utan att visa originaldialogen. Testerna ändrar inte datorns starttid eller dess riktiga HKLM-status och körs även i repots CI. Verifiera dessutom på en Windows 11-pilot: båda demostilarnas utseende och stängning/timeout, interaktiv dialog från SYSTEM, ingen inloggad användare, användarbyte, vila, processomstart och riktig Windows-omstart. Detta kan inte ersättas av mockade tester.
 
 ## Avinstallation
 

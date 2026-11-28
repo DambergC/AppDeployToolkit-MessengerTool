@@ -6,7 +6,7 @@ Displays a reminder without checking real uptime or recording acknowledgement.
 .PARAMETER DemoMinutesBefore
 Selects a configured reminder for Demo; 0 selects the overdue message. Defaults to the earliest reminder.
 .PARAMETER DemoRestartPrompt
-Displays a safe visual simulation, not the real restart dialog or an active countdown.
+Displays a static image of the packaged toolkit restart dialog, without interactive restart controls or an active countdown.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Policy')]
 param(
@@ -42,7 +42,7 @@ if ($manifest.Name -ne 'PSAppDeployToolkit' -or $manifest.Version -ne [version]'
     throw 'RestartPolicy requires the locally packaged PSAppDeployToolkit 4.1.8 manifest.'
 }
 Import-Module -Name $policy.ToolkitModulePath -Force -ErrorAction Stop
-foreach ($command in @('Show-ADTInstallationPrompt', 'Show-ADTInstallationRestartPrompt', 'Get-ADTLoggedOnUser', 'Initialize-ADTModule', 'Get-ADTEnvironmentTable', 'Get-ADTConfig', 'Write-ADTLogEntry')) {
+foreach ($command in @('Show-ADTInstallationPrompt', 'Show-ADTInstallationRestartPrompt', 'Get-ADTLoggedOnUser', 'Initialize-ADTModule', 'Get-ADTEnvironmentTable', 'Get-ADTConfig', 'Get-ADTStringTable', 'Write-ADTLogEntry')) {
     $null = Get-Command -Name $command -Module PSAppDeployToolkit -ErrorAction Stop
 }
 Initialize-ADTModule -ErrorAction Stop
@@ -78,7 +78,7 @@ try {
             if ($PSBoundParameters.ContainsKey('DemoMinutesBefore')) {
                 $passParameters.MinutesBefore = $DemoMinutesBefore
             }
-            Write-ADTLogEntry @logParameters -Message 'DEMO: No real uptime check, acknowledgement write or restart. Restart prompt preview is a visual simulation.'
+            Write-ADTLogEntry @logParameters -Message 'DEMO: No real uptime check, acknowledgement write or restart. Restart prompt preview is a static image of the packaged toolkit dialog.'
             $result = Show-RestartPolicyDemo @passParameters
         } else {
             # LastBootUpTime also includes sleep/hibernate time and is not reset by Fast Startup.

@@ -135,7 +135,7 @@ Describe 'RestartPolicy toolkit session bridge' {
             function script:Get-ADTEnvironmentTable { [CmdletBinding()]param() }
             function script:Show-ADTInstallationPrompt {
                 [CmdletBinding()]
-                param($Title, $Subtitle, $Message, $ButtonRightText, $ButtonLeftText, $Timeout, [switch]$NoExitOnTimeout)
+                param($Title, $Subtitle, $Message, $ButtonRightText, $Timeout, [switch]$NoExitOnTimeout)
             }
             function script:Show-ADTInstallationRestartPrompt {
                 [CmdletBinding()]
@@ -275,6 +275,7 @@ Describe 'RestartPolicy safe manual demos' {
         }
         Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { $ButtonRightText }
         Mock Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy { throw 'A demo must never call the real restart prompt.' }
+        Mock Show-RestartPolicyRestartPreview -ModuleName RestartPolicy { 'DemoClosed' }
         Mock Test-Path -ModuleName RestartPolicy { throw 'A demo must not read registry state.' }
         Mock Get-ItemProperty -ModuleName RestartPolicy { throw 'A demo must not read acknowledgements.' }
         Mock New-Item -ModuleName RestartPolicy { throw 'A demo must not create registry state.' }
@@ -308,20 +309,19 @@ Describe 'RestartPolicy safe manual demos' {
         }
     }
 
-    It 'simulates a restart prompt safely even when the configured prompt is disabled' {
+    It 'selects the packaged restart dialog preview even when the configured prompt is disabled' {
         $disabled = $script:policy.PSObject.Copy()
         $disabled.UseToolkitRestartPrompt = $false
         $disabled.Reminders = @(
             [pscustomobject]@{ MinutesBefore = 5; Message = 'Last' }
             [pscustomobject]@{ MinutesBefore = 60; Message = 'First' }
         )
-        Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { $ButtonLeftText }
         Show-RestartPolicyDemo -Policy $disabled -Dialog RestartPrompt | Should -Be 'DemoClosed'
         $disabled.UseToolkitRestartPrompt | Should -BeFalse
-        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 1 -Exactly -ParameterFilter {
-            $Message -match 'Visuell simulering' -and $Message -match '5 minuter \(inte aktiv i demo\)' -and
-            $ButtonLeftText -eq 'Starta om (demo)' -and $Subtitle -eq 'RestartPolicy - DEMO'
+        Should -Invoke Show-RestartPolicyRestartPreview -ModuleName RestartPolicy -Times 1 -Exactly -ParameterFilter {
+            $Policy.UseToolkitRestartPrompt -and ($Policy.Reminders | Measure-Object MinutesBefore -Minimum).Minimum -eq 5
         }
+        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 0
         Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
         Should -Invoke Invoke-RestartPolicyPass -ModuleName RestartPolicy -Times 0
         Should -Invoke Test-Path -ModuleName RestartPolicy -Times 0
@@ -342,6 +342,7 @@ Describe 'RestartPolicy safe manual demos' {
         $log | Should -Match 'DEMO: RestartPrompt, stage 30'
         $log | Should -Match 'real boot and acknowledgement state are not read or changed'
         $log | Should -Match 'DEMO result: DemoClosed'
+        $log | Should -Match 'Static image of the packaged toolkit restart dialog'
         $log | Should -Not -Match 'Restart decision:'
     }
 
@@ -350,6 +351,7 @@ Describe 'RestartPolicy safe manual demos' {
         Show-RestartPolicyDemo -Policy $script:policy -Dialog RestartPrompt | Should -Be 'NoActiveSession'
         Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 0
         Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
+        Should -Invoke Show-RestartPolicyRestartPreview -ModuleName RestartPolicy -Times 0
     }
 
     It 'preserves timeout and error reporting in demo mode' {
@@ -357,6 +359,46 @@ Describe 'RestartPolicy safe manual demos' {
         Show-RestartPolicyDemo -Policy $script:policy | Should -Be 'Timeout'
         Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { throw 'demo dialog failed' }
         { Show-RestartPolicyDemo -Policy $script:policy } | Should -Throw '*demo dialog failed*'
+        Mock Show-RestartPolicyRestartPreview -ModuleName RestartPolicy { 'Timeout' }
+        Show-RestartPolicyDemo -Policy $script:policy -Dialog RestartPrompt | Should -Be 'Timeout'
+        Mock Show-RestartPolicyRestartPreview -ModuleName RestartPolicy { throw 'preview failed' }
+        { Show-RestartPolicyDemo -Policy $script:policy -Dialog RestartPrompt } | Should -Throw '*preview failed*'
+    }
+}
+
+Describe 'Packaged restart dialog snapshot rendering' -Skip:([Environment]::OSVersion.Platform -ne 'Win32NT') {
+    BeforeAll {
+        Import-Module $script:policy.ToolkitModulePath -Force -ErrorAction Stop
+        Initialize-ADTModule -ErrorAction Stop
+    }
+
+    It 'renders a nonblank immutable image of the actual <Style> dialog without showing it' -ForEach @(
+        @{ Style = 'Fluent' }
+        @{ Style = 'Classic' }
+    ) {
+        $config = (Get-ADTConfig).Clone()
+        $config.UI = $config.UI.Clone()
+        $config.UI.DialogStyle = $Style
+        InModuleScope RestartPolicy -Parameters @{ Policy = $script:policy; Config = $config } {
+            param($Policy, $Config)
+            Mock Get-ADTConfig { $Config }
+            Mock Show-ADTInstallationRestartPrompt { throw 'Snapshot rendering must not show the live restart dialog.' }
+            $image = New-RestartPolicyRestartPreviewImage -Policy $Policy
+            $image | Should -BeOfType ([System.Windows.Media.Imaging.BitmapSource])
+            $image.IsFrozen | Should -BeTrue
+            $image.PixelWidth | Should -BeGreaterThan 0
+            $image.PixelHeight | Should -BeGreaterThan 0
+            $converted = [System.Windows.Media.Imaging.FormatConvertedBitmap]::new(
+                $image, [System.Windows.Media.PixelFormats]::Pbgra32, $null, 0)
+            $pixels = [byte[]]::new($image.PixelWidth * $image.PixelHeight * 4)
+            $converted.CopyPixels($pixels, $image.PixelWidth * 4, 0)
+            $colors = [System.Collections.Generic.HashSet[uint32]]::new()
+            for ($offset = 0; $offset -lt $pixels.Length -and $colors.Count -le 10; $offset += 4) {
+                $null = $colors.Add([BitConverter]::ToUInt32($pixels, $offset))
+            }
+            $colors.Count | Should -BeGreaterThan 10
+            Should -Invoke Show-ADTInstallationRestartPrompt -Times 0
+        }
     }
 }
 

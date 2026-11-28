@@ -143,6 +143,9 @@ function Show-RestartPolicyReminder {
             -CountdownNoHideSeconds 30 -ErrorAction Stop
         return 'RestartPromptReturned'
     }
+    if ($restartPrompt -and $Demo) {
+        return Show-RestartPolicyRestartPreview -Policy $Policy
+    }
 
     $parameters = @{
         Title = $Policy.Title.Replace('[', ('[' + [char]0x2060))
@@ -156,15 +159,9 @@ function Show-RestartPolicyReminder {
     if ($Demo) {
         $parameters.Subtitle = 'RestartPolicy - DEMO'
         $parameters.Message = "DEMO: Ingen omstart sker och ingen kvittering sparas.`n`n$($parameters.Message)"
-        if ($restartPrompt) {
-            # ADT 4.1.8 has no safe preview mode for the real restart dialog.
-            $parameters.Message = "DEMO: Visuell simulering av omstartsuppmaningen. Ingen omstart sker och ingen kvittering sparas.`n`nKonfigurerad nedräkning: $lastReminder minuter (inte aktiv i demo)."
-            $parameters.ButtonLeftText = 'Starta om (demo)'
-            $parameters.ButtonRightText = 'Stäng demo'
-        }
     }
     $result = Show-ADTInstallationPrompt @parameters
-    if ($Demo -and ($result -ceq $parameters.ButtonRightText -or ($restartPrompt -and $result -ceq $parameters.ButtonLeftText))) {
+    if ($Demo -and $result -ceq $parameters.ButtonRightText) {
         return 'DemoClosed'
     }
     if ($result -ceq $Policy.AcknowledgeButtonText) {
@@ -174,6 +171,156 @@ function Show-RestartPolicyReminder {
         return 'Timeout'
     }
     throw "Unexpected toolkit dialog result: '$result'. The reminder was not acknowledged."
+}
+
+function New-RestartPolicyRestartPreviewImage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Policy)
+
+    if ([Environment]::OSVersion.Platform -ne 'Win32NT' -or [System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+        throw 'Restart preview requires Windows PowerShell in STA mode. Start powershell.exe -STA or pwsh.exe -STA.'
+    }
+    $toolkitModule = (Get-Command Get-ADTStringTable -Module PSAppDeployToolkit -ErrorAction Stop).Module
+    if ($toolkitModule.Version -ne [version]'4.1.8') {
+        throw 'Restart preview requires the locally packaged PSAppDeployToolkit 4.1.8.'
+    }
+    $language = & $toolkitModule { $Script:ADT.Language }
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing -ErrorAction Stop
+    if ($null -eq [System.Windows.Application]::Current) {
+        $application = [System.Windows.Application]::new()
+        $application.ShutdownMode = [System.Windows.ShutdownMode]::OnExplicitShutdown
+    }
+    $config = Get-ADTConfig -ErrorAction Stop
+    $strings = Get-ADTStringTable -ErrorAction Stop
+    $countdown = [timespan]::FromMinutes(($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum)
+    $options = @{
+        AppTitle = $Policy.Title.Replace('[', ('[' + [char]0x2060))
+        Subtitle = 'RestartPolicy'
+        AppIconImage = $config.Assets.Logo
+        AppIconDarkImage = $config.Assets.LogoDark
+        AppBannerImage = $config.Assets.Banner
+        DialogTopMost = $false
+        Language = $language
+        Strings = $strings.RestartPrompt
+        CountdownDuration = $countdown
+        CountdownNoMinimizeDuration = [timespan]::FromSeconds(30)
+    }
+    if ($null -ne $config.UI.FluentAccentColor) {
+        $options.FluentAccentColor = $config.UI.FluentAccentColor
+    }
+    $options = [PSADT.UserInterface.DialogOptions.RestartDialogOptions]::new([PSADT.Module.DeploymentType]::Install, $options)
+    $style = [string]$config.UI.DialogStyle
+    if ($style -notin @('Fluent', 'Classic')) {
+        throw "Unsupported toolkit dialog style for restart preview: '$style'."
+    }
+    $flags = [System.Reflection.BindingFlags]'Instance, NonPublic'
+    $type = $options.GetType().Assembly.GetType("PSADT.UserInterface.Dialogs.$style.RestartDialog", $true)
+    $constructor = $type.GetConstructor($flags, $null, @($options.GetType()), $null)
+    if ($null -eq $constructor) {
+        throw 'The packaged toolkit restart dialog does not match the expected 4.1.8 constructor.'
+    }
+    $dialog = $constructor.Invoke(@($options))
+    try {
+        # Render an unshown dialog to pixels only. Dispose its dormant timer before any layout.
+        # The original controls are never attached to the preview or given a message loop.
+        $timerType = if ($style -eq 'Fluent') { $type.BaseType } else { $type }
+        $timerName = if ($style -eq 'Fluent') { '_countdownTimer' } else { 'countdownTimer' }
+        $timerField = $timerType.GetField($timerName, $flags)
+        if ($null -eq $timerField -or $null -eq ($timer = $timerField.GetValue($dialog))) {
+            throw 'The packaged toolkit restart timer does not match the expected 4.1.8 preview contract.'
+        }
+        $timer.Dispose()
+        $countdownText = $countdown.ToString('hh\:mm\:ss')
+        if ($style -eq 'Fluent') {
+            $null = $type.BaseType.GetMethod('UpdateCountdownDisplay', $flags).Invoke($dialog, @())
+            $null = $type.BaseType.GetMethod('UpdateButtonLayout', $flags).Invoke($dialog, @())
+            $null = $type.BaseType.GetMethod('UpdateRowDefinition', $flags).Invoke($dialog, @())
+            $visual = $dialog.Content
+            $width = if ([double]::IsNaN($dialog.Width)) { $dialog.MinWidth } else { $dialog.Width }
+            if ($width -le 0 -or [double]::IsInfinity($width)) {
+                throw 'The packaged Fluent restart dialog has no finite preview width.'
+            }
+            $visual.Measure([System.Windows.Size]::new($width, [double]::PositiveInfinity))
+            $bounds = [System.Windows.Rect]::new(0, 0, $width, $visual.DesiredSize.Height)
+            $visual.Arrange($bounds)
+            $drawing = [System.Windows.Media.DrawingVisual]::new()
+            $context = $drawing.RenderOpen()
+            try {
+                $context.DrawRectangle($dialog.Background, $null, $bounds)
+                $context.DrawRectangle([System.Windows.Media.VisualBrush]::new($visual), $null, $bounds)
+            } finally {
+                $context.Close()
+            }
+            $image = [System.Windows.Media.Imaging.RenderTargetBitmap]::new(
+                [int][math]::Ceiling($bounds.Width), [int][math]::Ceiling($bounds.Height), 96, 96,
+                [System.Windows.Media.PixelFormats]::Pbgra32)
+            $image.Render($drawing)
+        } else {
+            $type.GetField('labelCountdown', $flags).GetValue($dialog).Text = $countdownText
+            $dialog.PerformLayout()
+            $bitmap = [System.Drawing.Bitmap]::new($dialog.Width, $dialog.Height)
+            $stream = [System.IO.MemoryStream]::new()
+            try {
+                $dialog.DrawToBitmap($bitmap, [System.Drawing.Rectangle]::new(0, 0, $bitmap.Width, $bitmap.Height))
+                $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+                $stream.Position = 0
+                $image = [System.Windows.Media.Imaging.BitmapImage]::new()
+                $image.BeginInit()
+                $image.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                $image.StreamSource = $stream
+                $image.EndInit()
+            } finally {
+                $bitmap.Dispose()
+                $stream.Dispose()
+            }
+        }
+        $image.Freeze()
+        return $image
+    } finally {
+        if ($style -eq 'Classic') { $dialog.Dispose() } else { $dialog.Close() }
+    }
+}
+
+function Show-RestartPolicyRestartPreview {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Policy)
+
+    $image = New-RestartPolicyRestartPreviewImage -Policy $Policy
+    $window = [System.Windows.Window]::new()
+    $window.Title = 'RestartPolicy - DEMO'
+    $window.SizeToContent = [System.Windows.SizeToContent]::WidthAndHeight
+    $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
+    $window.Tag = 'DemoClosed'
+    $panel = [System.Windows.Controls.StackPanel]::new()
+    $notice = [System.Windows.Controls.TextBlock]::new()
+    $notice.Text = "DEMO: Statisk bild av omstartsdialogen.`nIngen aktiv nedräkning, omstart eller sparad kvittering."
+    $notice.Margin = [System.Windows.Thickness]::new(12)
+    $panel.Children.Add($notice) | Out-Null
+    $picture = [System.Windows.Controls.Image]::new()
+    $picture.Source = $image
+    $picture.IsHitTestVisible = $false
+    $scroll = [System.Windows.Controls.ScrollViewer]::new()
+    $scroll.MaxWidth = [System.Windows.SystemParameters]::WorkArea.Width - 80
+    $scroll.MaxHeight = [System.Windows.SystemParameters]::WorkArea.Height - 160
+    $scroll.Content = $picture
+    $panel.Children.Add($scroll) | Out-Null
+    $close = [System.Windows.Controls.Button]::new()
+    $close.Content = 'Stäng demo'
+    $close.Margin = [System.Windows.Thickness]::new(12)
+    $close.Add_Click({ $window.Close() })
+    $panel.Children.Add($close) | Out-Null
+    $window.Content = $panel
+    $timeout = [System.Windows.Threading.DispatcherTimer]::new()
+    $timeout.Interval = [timespan]::FromSeconds($Policy.DialogTimeoutSeconds)
+    $timeout.Add_Tick({ $window.Tag = 'Timeout'; $window.Close() })
+    try {
+        $timeout.Start()
+        $null = $window.ShowDialog()
+        return $window.Tag
+    } finally {
+        $timeout.Stop()
+        $window.Close()
+    }
 }
 
 function Show-RestartPolicyDemo {
@@ -200,6 +347,9 @@ function Show-RestartPolicyDemo {
     $stage = Get-RestartPolicyStage -Policy $demoPolicy -BootTimeUtc $demoBoot -NowUtc $now
     if ($LogPath) {
         Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "DEMO: $Dialog, stage $MinutesBefore minutes before deadline. Synthetic timing; real boot and acknowledgement state are not read or changed. No restart will be requested."
+        if ($Dialog -eq 'RestartPrompt') {
+            Write-RestartPolicyDiagnosticLog -Path $LogPath -Message 'DEMO: Static image of the packaged toolkit restart dialog. Countdown timer is disposed before rendering; original buttons are not interactive.'
+        }
     }
     $result = Show-RestartPolicyReminder -Policy $demoPolicy -Stage $stage -Demo
     if ($LogPath) {
