@@ -144,12 +144,24 @@ function Show-RestartPolicyReminder {
     throw "Unexpected toolkit dialog result: '$result'. The reminder was not acknowledged."
 }
 
+function Write-RestartPolicyDiagnosticLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Message
+    )
+
+    $timestamp = [datetimeoffset]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz')
+    Add-Content -LiteralPath $Path -Value "[$timestamp] $Message" -Encoding UTF8 -ErrorAction Stop
+}
+
 function Invoke-RestartPolicyPass {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Policy,
         [Parameter(Mandatory)][datetimeoffset]$BootTimeUtc,
-        [datetimeoffset]$NowUtc = [datetimeoffset]::UtcNow
+        [datetimeoffset]$NowUtc = [datetimeoffset]::UtcNow,
+        [string]$LogPath
     )
 
     $statePath = 'HKLM:\SOFTWARE\RestartPolicy'
@@ -164,6 +176,23 @@ function Invoke-RestartPolicyPass {
         }
     }
     $stage = Get-RestartPolicyStage -Policy $Policy -BootTimeUtc $BootTimeUtc -NowUtc $NowUtc -LastStageMinutes $lastStage
+    if ($LogPath) {
+        $deadline = $BootTimeUtc.AddHours($Policy.RestartAfterHours)
+        $deadlineLocal = $deadline.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+        $bootLocal = $BootTimeUtc.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+        if ($null -eq $stage) {
+            $nextMinutes = @($Policy.Reminders.MinutesBefore | Where-Object { $_ -lt $lastStage } | Sort-Object -Descending) + @(0)
+            if ($lastStage -eq 0) {
+                $status = 'No further reminders until the next Windows restart; the final reminder was acknowledged.'
+            } else {
+                $nextLocal = $deadline.AddMinutes(-$nextMinutes[0]).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+                $status = "No reminder due. Next eligible reminder: $nextLocal."
+            }
+        } else {
+            $status = "Reminder due: $($stage.MinutesBefore) minutes before the restart deadline."
+        }
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Boot: $bootLocal. Restart deadline: $deadlineLocal. $status"
+    }
     if ($null -eq $stage) { return 'NotDue' }
 
     $result = Show-RestartPolicyReminder -Policy $Policy -Stage $stage
@@ -173,7 +202,14 @@ function Invoke-RestartPolicyPass {
         $null = New-ItemProperty -LiteralPath $statePath -Name LastStageMinutes -Value $stage.MinutesBefore -PropertyType DWord -Force -ErrorAction Stop
         $null = New-ItemProperty -LiteralPath $statePath -Name BootTimeUtc -Value $bootId -PropertyType String -Force -ErrorAction Stop
     }
+    if ($LogPath) {
+        $message = "Reminder result: $result."
+        if ($result -eq 'NoActiveSession' -or $result -eq 'Timeout' -or $result -eq 'RestartPromptReturned') {
+            $message += " The policy will check again after $($Policy.PollSeconds) seconds if it keeps running."
+        }
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message $message
+    }
     return $result
 }
 
-Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass
+Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass, Write-RestartPolicyDiagnosticLog

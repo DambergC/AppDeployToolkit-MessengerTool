@@ -306,4 +306,49 @@ Describe 'RestartPolicy per-boot acknowledgement state' {
         { Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(69) } |
             Should -Throw '*access denied*'
     }
+
+    It 'logs the next eligible reminder and restart deadline after acknowledgement' {
+        $path = Join-Path $TestDrive 'diagnostic.log'
+        Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(66) -LogPath $path |
+            Should -Be 'NotDue'
+        $log = Get-Content -LiteralPath $path -Raw
+        $log | Should -Match ([regex]::Escape($script:boot.AddHours(69).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')))
+        $log | Should -Match ([regex]::Escape($script:boot.AddHours(72).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')))
+        $log | Should -Match 'No reminder due'
+    }
+
+    It 'logs the first reminder before any stage is due' {
+        Mock Test-Path -ModuleName RestartPolicy { $false }
+        $path = Join-Path $TestDrive 'first.log'
+        Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(1) -LogPath $path |
+            Should -Be 'NotDue'
+        Get-Content -LiteralPath $path -Raw | Should -Match ([regex]::Escape($script:boot.AddHours(66).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')))
+    }
+
+    It 'logs that no further reminders are scheduled after the final acknowledgement' {
+        Mock Get-ItemProperty -ModuleName RestartPolicy {
+            [pscustomobject]@{ BootTimeUtc = '2026-01-01T00:00:00.0000000+00:00'; LastStageMinutes = 0 }
+        }
+        $path = Join-Path $TestDrive 'final.log'
+        Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(100) -LogPath $path |
+            Should -Be 'NotDue'
+        Get-Content -LiteralPath $path -Raw | Should -Match 'No further reminders until the next Windows restart'
+    }
+
+    It 'logs a due reminder and a missing active session' {
+        Mock Show-RestartPolicyReminder -ModuleName RestartPolicy { 'NoActiveSession' }
+        $path = Join-Path $TestDrive 'session.log'
+        Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(69) -LogPath $path |
+            Should -Be 'NoActiveSession'
+        $log = Get-Content -LiteralPath $path -Raw
+        $log | Should -Match 'Reminder due: 180 minutes'
+        $log | Should -Match 'Reminder result: NoActiveSession'
+        $log | Should -Match 'check again after 30 seconds'
+    }
+
+    It 'surfaces diagnostic log write errors' {
+        $path = Join-Path (Join-Path $TestDrive 'missing') 'diagnostic.log'
+        { Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(66) -LogPath $path } |
+            Should -Throw
+    }
 }
