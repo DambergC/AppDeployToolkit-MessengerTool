@@ -256,6 +256,15 @@ Describe 'RestartPolicy toolkit session bridge' {
 }
 
 Describe 'RestartPolicy safe manual demos' {
+    BeforeAll {
+        InModuleScope RestartPolicy {
+            function script:New-ItemProperty {
+                [CmdletBinding()]
+                param($LiteralPath, $Name, $Value, $PropertyType, [switch]$Force)
+            }
+        }
+    }
+
     BeforeEach {
         Mock Get-ADTLoggedOnUser -ModuleName RestartPolicy {
             [pscustomobject]@{ IsActiveUserSession = $true; SessionId = 1; SID = 'test-sid' }
@@ -269,7 +278,7 @@ Describe 'RestartPolicy safe manual demos' {
         Mock Test-Path -ModuleName RestartPolicy { throw 'A demo must not read registry state.' }
         Mock Get-ItemProperty -ModuleName RestartPolicy { throw 'A demo must not read acknowledgements.' }
         Mock New-Item -ModuleName RestartPolicy { throw 'A demo must not create registry state.' }
-        Mock Set-ItemProperty -ModuleName RestartPolicy { throw 'A demo must not write acknowledgements.' }
+        Mock New-ItemProperty -ModuleName RestartPolicy { throw 'A demo must not write acknowledgements.' }
         Mock Invoke-RestartPolicyPass -ModuleName RestartPolicy { throw 'A demo must not run the real policy pass.' }
     }
 
@@ -288,7 +297,7 @@ Describe 'RestartPolicy safe manual demos' {
         Should -Invoke Test-Path -ModuleName RestartPolicy -Times 0
         Should -Invoke Get-ItemProperty -ModuleName RestartPolicy -Times 0
         Should -Invoke New-Item -ModuleName RestartPolicy -Times 0
-        Should -Invoke Set-ItemProperty -ModuleName RestartPolicy -Times 0
+        Should -Invoke New-ItemProperty -ModuleName RestartPolicy -Times 0
         Should -Invoke Invoke-RestartPolicyPass -ModuleName RestartPolicy -Times 0
     }
 
@@ -315,6 +324,10 @@ Describe 'RestartPolicy safe manual demos' {
         }
         Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
         Should -Invoke Invoke-RestartPolicyPass -ModuleName RestartPolicy -Times 0
+        Should -Invoke Test-Path -ModuleName RestartPolicy -Times 0
+        Should -Invoke Get-ItemProperty -ModuleName RestartPolicy -Times 0
+        Should -Invoke New-Item -ModuleName RestartPolicy -Times 0
+        Should -Invoke New-ItemProperty -ModuleName RestartPolicy -Times 0
     }
 
     It 'rejects a demo stage not present in the configuration' {
