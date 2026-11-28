@@ -2,7 +2,7 @@
 
 Fristående påminnelser om omstart, baserade på datorns senaste Windows-start. Enda gemensamma beroendet med MessengerTool är **PSAppDeployToolkit 4.1.8**. Ingen SQL, AD, MessengerTool-konfiguration eller MessengerTool-modul används. Inga befintliga klienter eller aktiviteter ändras.
 
-**Som standard görs ingen tvingad eller automatisk omstart.** Dialogen har en kvitteringsknapp, precis som MessengerTool. Användaren sparar sitt arbete och väljer **Start > Av/på > Starta om** själv. Alternativet `UseToolkitRestartPrompt` kan i stället aktivera toolkitets omstartsdialog med automatisk omstart; se nedan.
+**Standardkonfigurationen kan starta om datorn automatiskt.** Vid sista varningen visas toolkitets omstartsdialog med nedräkning. Sätt `UseToolkitRestartPrompt` till `false` för enbart kvitteringsdialoger utan automatisk omstart.
 
 ## Standardbeteende
 
@@ -10,16 +10,16 @@ Fristående påminnelser om omstart, baserade på datorns senaste Windows-start.
 | --- | --- |
 | 66 timmar | Högst 6 timmar kvar till omstartsgränsen |
 | 69 timmar | Högst 3 timmar kvar |
-| 71 timmar 30 minuter | Högst 30 minuter kvar |
-| 72 timmar eller mer | Gränsen har passerats: starta om så snart som möjligt |
+| 71 timmar 30 minuter | Omstartsdialog med 30 minuters nedräkning |
+| 72 timmar eller mer | Samma omstartsdialog om den inte redan visats |
 
 Tiden räknas från `Win32_OperatingSystem.LastBootUpTime`, inklusive vila och viloläge, inte från inloggningen eller skriptstarten. Windows Snabbstart kan bevara starttiden vid avstängning/påslagning; välj **Starta om** för att återställa tiden.
 
-Skriptet kontrollerar som standard var 30:e sekund. En varning visas vid nästa kontroll efter tröskeln, inte garanterat exakt på sekunden. Om datorn vaknar eller användaren loggar in sent visas **endast det mest aktuella steget**, inte en kö av gamla varningar. Utan aktiv användarsession väntar skriptet.
+Varje skriptkörning gör en kontroll och avslutas därefter; den schemalagda aktiviteten startar en ny kontroll som standard varje minut. En varning visas vid nästa kontroll efter tröskeln, inte garanterat exakt på sekunden. Om datorn vaknar eller användaren loggar in sent visas **endast det mest aktuella steget**, inte en kö av gamla varningar. Utan aktiv användarsession avslutas kontrollen och nästa schemalagda körning försöker igen.
 
-Varje steg kvitteras högst en gång **per dator och Windows-start**, i `HKLM:\SOFTWARE\RestartPolicy`. Kvitteringar gäller därmed även vid användarbyte och omstart av skriptet. En riktig omstart återställer policyn automatiskt. Kvittering av en varning skjuter inte upp nästa steg eller omstartsgränsen. Efter kvitterad slutuppmaning visas inga fler meddelanden förrän nästa Windows-start.
+Vanliga dialoger kvitteras högst en gång per steg **per dator och Windows-start**, i `HKLM:\SOFTWARE\RestartPolicy`. Kvitteringar gäller därmed även vid användarbyte och omstart av skriptet. En riktig omstart återställer policyn automatiskt. Kvittering av en varning skjuter inte upp nästa steg eller omstartsgränsen. Om omstartsdialogen är avstängd visas inga fler meddelanden efter kvitterad slutuppmaning förrän nästa Windows-start.
 
-En vanlig dialog stängs efter `DialogTimeoutSeconds` om den inte kvitteras. Timeout räknas **inte** som kvittering: skriptet försöker igen efter nästa pollintervall, eller visar nästa steg om dess tröskel har passerats.
+En vanlig dialog stängs efter `DialogTimeoutSeconds` om den inte kvitteras. Timeout räknas **inte** som kvittering: nästa schemalagda körning försöker igen, eller visar nästa steg om dess tröskel har passerats. En körning väntar medan toolkitets dialog är öppen; särskilt omstartsdialogen kan vara öppen tills datorn startas om. Inga parallella körningar startas under tiden.
 
 ## Krav och installation
 
@@ -53,7 +53,7 @@ $root = 'C:\Program Files\AppDeployToolkit-MessengerTool\RestartPolicy'
 & "$root\Register-RestartPolicyTask.ps1" -ConfigPath "$root\RestartPolicy.xml"
 ```
 
-Registreringen skapar/ersätter endast aktiviteten `RestartPolicy` och startar den direkt. Den körs som SYSTEM vid datorstart och inloggning, även på batteri, utan tidsgräns. Parallella instanser avvisas. Aktivitetsschemaläggaren försöker starta om processen tre gånger med en minuts mellanrum vid fel. Kvarstående fel måste åtgärdas av administratör; ingen annan omstartsmekanism tar över.
+Registreringen skapar/ersätter endast aktiviteten `RestartPolicy` och startar den direkt. Den körs som SYSTEM vid datorstart, inloggning och därefter enligt ett dagligt upprepat schema, även på batteri, utan tidsgräns. Schemalagda parallella instanser ignoreras. Aktivitetsschemaläggaren försöker starta om processen tre gånger med en minuts mellanrum vid fel. Kvarstående fel måste åtgärdas av administratör; ingen annan omstartsmekanism tar över. Registrera aktiviteten på nytt efter uppgradering eller ändring av `PollSeconds`, så att schemat uppdateras.
 
 Förhandsgranska registreringen med `-WhatIf`. Befintlig aktivitet med samma namn ersätts vid vanlig registrering; välj `-TaskName` om ett annat namn behövs. Flera parallella policyinstanser på samma dator stöds inte.
 
@@ -65,9 +65,9 @@ Förhandsgranska registreringen med `-WhatIf`. Befintlig aktivitet med samma nam
 | --- | --- |
 | `ToolkitModulePath` | Sökväg till toolkitets manifest. Relativ sökväg räknas från XML-filens katalog, inte aktuell arbetskatalog. |
 | `RestartAfterHours` | Positivt heltal, 1–8760 timmar från Windows-start; standard 72. |
-| `PollSeconds` | Kontrollintervall, heltal 5–3600 sekunder; standard 30. |
+| `PollSeconds` | Schemalagt kontrollintervall, hela minuter mellan 60 och 3600 sekunder; standard 60. Äldre konfigurationer med exempelvis 30 måste ändras före uppgradering. |
 | `DialogTimeoutSeconds` | Dialogens timeout, heltal 10–300 sekunder; standard 120. Får inte överstiga toolkitets `UI.DefaultTimeout`. |
-| `UseToolkitRestartPrompt` | `true` aktiverar toolkitets omstartsdialog för sista varningen och efter tidsgränsen. `false` eller utelämnat behåller befintligt beteende. |
+| `UseToolkitRestartPrompt` | `true` aktiverar toolkitets omstartsdialog för sista varningen och efter tidsgränsen (standard i exempelfilen). `false` eller utelämnat använder vanliga kvitteringsdialoger. |
 | `Title` | Dialogrubrik. |
 | `AcknowledgeButtonText` | Kvitteringsknapp, 1–200 tecken. `Timeout` är reserverat av toolkit. |
 | `OverdueMessage` | Text när omstartsgränsen har nåtts. |
@@ -77,7 +77,7 @@ Förhandsgranska registreringen med `-WhatIf`. Befintlig aktivitet med samma nam
 
 Med `UseToolkitRestartPrompt` satt till `true` används `Show-ADTInstallationRestartPrompt` från den varning som har lägst `MinutesBefore`, även om gränsen redan passerats innan dialogen kan visas. **Datorn kan startas om automatiskt när nedräkningen löper ut**, så användaren måste spara sitt arbete. Nedräkningen är hela detta antal minuter från dialogens start (30 minuter med standardvärdena), inte återstående tid till gränsen; vid sen inloggning eller vila kan omstarten därför ske efter gränsen. De sista 30 sekunderna kan dialogen inte döljas. Toolkitets egna lokaliserade texter används, inte `Reminder`, `OverdueMessage`, `AcknowledgeButtonText` eller `DialogTimeoutSeconds`.
 
-Skriptet väntar om ingen aktiv session finns vid kontrollen. Toolkitet kan dock starta om utan dialog om sessionen försvinner mellan kontrollen och toolkitets egen sessionskontroll. Omstartsdialogen returnerar ingen kvittens till skriptet; den markeras därför inte som kvitterad, och om den återvänder utan att datorn startats om försöker skriptet igen vid nästa kontroll.
+Skriptet avslutas om ingen aktiv session finns vid kontrollen. Toolkitet kan dock starta om utan dialog om sessionen försvinner mellan kontrollen och toolkitets egen sessionskontroll. Omstartsdialogen returnerar ingen kvittens till skriptet; den markeras därför inte som kvitterad, och om den återvänder utan att datorn startats om försöker nästa schemalagda körning igen.
 
 Texterna i vanliga dialoger kan innehålla `{DeadlineLocal}`, som ersätts med den verkliga tidsgränsen i lokal tid (`yyyy-MM-dd HH:mm`). Ingen PowerShell-kod utvärderas från XML och meddelandenas toolkit-markup neutraliseras. XML-specialtecken måste skrivas som till exempel `&amp;` och `&lt;`. Spara XML som UTF-8 så att svenska tecken bevaras även i Windows PowerShell 5.1.
 
@@ -85,7 +85,7 @@ Efter XML-ändring:
 
 ```powershell
 Stop-ScheduledTask -TaskName 'RestartPolicy'
-Start-ScheduledTask -TaskName 'RestartPolicy'
+& "$root\Register-RestartPolicyTask.ps1" -ConfigPath "$root\RestartPolicy.xml"
 ```
 
 Kvitteringar sparas över processomstarter. Ändringar av policy/tider återvisar inte redan kvitterade eller mindre brådskande steg under samma Windows-start. Vid avsiktlig återställning för ett pilottest: stoppa aktiviteten, ta bort **endast** `HKLM:\SOFTWARE\RestartPolicy` som administratör och starta aktiviteten igen.
@@ -108,16 +108,16 @@ Get-ScheduledTaskInfo -TaskName 'RestartPolicy'
 Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\RestartPolicy' -ErrorAction SilentlyContinue
 ```
 
-För en begränsad engångskörning kan `Start-RestartPolicy.ps1 -ConfigPath <sökväg> -Once` användas i en separat SYSTEM-process eller i en förhöjd administratörssession. Stoppa den ordinarie aktiviteten först. Kör sedan exempelvis följande från förhöjd, 64-bitars PowerShell:
+För en manuell kontroll kan `Start-RestartPolicy.ps1 -ConfigPath <sökväg>` användas i en separat SYSTEM-process eller i en förhöjd administratörssession. Stoppa den ordinarie aktiviteten först. Kör sedan exempelvis följande från förhöjd, 64-bitars PowerShell:
 
 ```powershell
 $root = 'C:\Program Files\AppDeployToolkit-MessengerTool\RestartPolicy'
 Stop-ScheduledTask -TaskName 'RestartPolicy' -ErrorAction SilentlyContinue
 & (Join-Path $root 'Start-RestartPolicy.ps1') `
-  -ConfigPath (Join-Path $root 'RestartPolicy.xml') -Once
+  -ConfigPath (Join-Path $root 'RestartPolicy.xml')
 ```
 
-Administratörsläget använder samma HKLM-status och samma toolkit-sessionbrygga som SYSTEM-läget; en aktiv användarsession krävs fortfarande för att visa dialogen. `-Once` visar bara en påminnelse om aktuell starttid passerat en konfigurerad tröskel.
+Administratörsläget använder samma HKLM-status och samma toolkit-sessionbrygga som SYSTEM-läget; en aktiv användarsession krävs fortfarande för att visa dialogen. Körningen visar bara en påminnelse om aktuell starttid passerat en konfigurerad tröskel.
 
 Kör de isolerade Pester 5-testerna manuellt från repots rot:
 

@@ -9,12 +9,14 @@ Describe 'RestartPolicy XML configuration' {
     It 'rejects invalid XML settings: <Name>' -ForEach @(
         @{ Name = 'zero uptime'; Old = '<RestartAfterHours>72</RestartAfterHours>'; New = '<RestartAfterHours>0</RestartAfterHours>' }
         @{ Name = 'fractional uptime'; Old = '<RestartAfterHours>72</RestartAfterHours>'; New = '<RestartAfterHours>1.5</RestartAfterHours>' }
-        @{ Name = 'zero poll interval'; Old = '<PollSeconds>30</PollSeconds>'; New = '<PollSeconds>0</PollSeconds>' }
-        @{ Name = 'missing field'; Old = '<PollSeconds>30</PollSeconds>'; New = '' }
+        @{ Name = 'zero poll interval'; Old = '<PollSeconds>60</PollSeconds>'; New = '<PollSeconds>0</PollSeconds>' }
+        @{ Name = 'sub-minute poll interval'; Old = '<PollSeconds>60</PollSeconds>'; New = '<PollSeconds>30</PollSeconds>' }
+        @{ Name = 'fractional minute poll interval'; Old = '<PollSeconds>60</PollSeconds>'; New = '<PollSeconds>90</PollSeconds>' }
+        @{ Name = 'missing field'; Old = '<PollSeconds>60</PollSeconds>'; New = '' }
         @{ Name = 'unknown field'; Old = '</RestartPolicy>'; New = '<Unknown>1</Unknown></RestartPolicy>' }
         @{ Name = 'blank title'; Old = '<Title>Omstart av datorn</Title>'; New = '<Title> </Title>' }
         @{ Name = 'long timeout'; Old = '<DialogTimeoutSeconds>120</DialogTimeoutSeconds>'; New = '<DialogTimeoutSeconds>301</DialogTimeoutSeconds>' }
-        @{ Name = 'invalid restart prompt option'; Old = '<UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>'; New = '<UseToolkitRestartPrompt>yes</UseToolkitRestartPrompt>' }
+        @{ Name = 'invalid restart prompt option'; Old = '<UseToolkitRestartPrompt>true</UseToolkitRestartPrompt>'; New = '<UseToolkitRestartPrompt>yes</UseToolkitRestartPrompt>' }
         @{ Name = 'duplicate reminder'; Old = 'MinutesBefore="180"'; New = 'MinutesBefore="360"' }
         @{ Name = 'negative reminder'; Old = 'MinutesBefore="180"'; New = 'MinutesBefore="-1"' }
         @{ Name = 'outside last day'; Old = 'MinutesBefore="360"'; New = 'MinutesBefore="1441"' }
@@ -38,12 +40,12 @@ Describe 'RestartPolicy XML configuration' {
     }
 
     It 'supports the restart prompt option and defaults to false for older configurations' {
-        $script:policy.UseToolkitRestartPrompt | Should -BeFalse
+        $script:policy.UseToolkitRestartPrompt | Should -BeTrue
         $path = Join-Path $TestDrive 'prompt.xml'
-        $script:exampleXml.Replace('<UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>', '<UseToolkitRestartPrompt>true</UseToolkitRestartPrompt>') |
+        $script:exampleXml.Replace('<UseToolkitRestartPrompt>true</UseToolkitRestartPrompt>', '<UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>') |
             Set-Content -LiteralPath $path -Encoding UTF8
-        (Import-RestartPolicy -Path $path).UseToolkitRestartPrompt | Should -BeTrue
-        $script:exampleXml.Replace('<UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>', '') |
+        (Import-RestartPolicy -Path $path).UseToolkitRestartPrompt | Should -BeFalse
+        $script:exampleXml.Replace('<UseToolkitRestartPrompt>true</UseToolkitRestartPrompt>', '') |
             Set-Content -LiteralPath $path -Encoding UTF8
         (Import-RestartPolicy -Path $path).UseToolkitRestartPrompt | Should -BeFalse
     }
@@ -67,6 +69,18 @@ Describe 'RestartPolicy execution context' {
         { Assert-RestartPolicyExecutionContext -IsSystem $false -IsAdministrator $true } | Should -Not -Throw
         { Assert-RestartPolicyExecutionContext -IsSystem $false -IsAdministrator $false } |
             Should -Throw '*elevated administrator*'
+    }
+}
+
+Describe 'RestartPolicy scheduled triggers' {
+    It 'creates startup, logon and daily repeating triggers with the configured interval' -Skip:([Environment]::OSVersion.Platform -ne 'Win32NT') {
+        $triggers = @(New-RestartPolicyTaskTrigger -PollSeconds 300)
+        $triggers.Count | Should -Be 3
+        $triggers[0].CimClass.CimClassName | Should -Be 'MSFT_TaskBootTrigger'
+        $triggers[1].CimClass.CimClassName | Should -Be 'MSFT_TaskLogonTrigger'
+        $triggers[2].CimClass.CimClassName | Should -Be 'MSFT_TaskDailyTrigger'
+        $triggers[2].Repetition.Interval | Should -Be 'PT5M'
+        $triggers[2].Repetition.Duration | Should -Be 'P1D'
     }
 }
 
@@ -202,8 +216,10 @@ Describe 'RestartPolicy toolkit session bridge' {
         $enabled = $script:policy.PSObject.Copy()
         $enabled.UseToolkitRestartPrompt = $true
         Show-RestartPolicyReminder -Policy $enabled -Stage $script:stage | Should -Be 'Acknowledged'
-        $last = Get-RestartPolicyStage -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(71.5)
-        Show-RestartPolicyReminder -Policy $script:policy -Stage $last | Should -Be 'Acknowledged'
+        $disabled = $script:policy.PSObject.Copy()
+        $disabled.UseToolkitRestartPrompt = $false
+        $last = Get-RestartPolicyStage -Policy $disabled -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(71.5)
+        Show-RestartPolicyReminder -Policy $disabled -Stage $last | Should -Be 'Acknowledged'
         Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
     }
 
@@ -343,7 +359,7 @@ Describe 'RestartPolicy per-boot acknowledgement state' {
         $log = Get-Content -LiteralPath $path -Raw
         $log | Should -Match 'Reminder due: 180 minutes'
         $log | Should -Match 'Reminder result: NoActiveSession'
-        $log | Should -Match 'check again after 30 seconds'
+        $log | Should -Match 'next scheduled run can try again'
     }
 
     It 'surfaces diagnostic log write errors' {

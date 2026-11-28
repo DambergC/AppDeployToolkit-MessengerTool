@@ -2,9 +2,9 @@
 <RestartPolicy>
   <ToolkitModulePath>..\Dependencies\PSAppDeployToolkit\4.1.8\PSAppDeployToolkit.psd1</ToolkitModulePath>
   <RestartAfterHours>72</RestartAfterHours>
-  <PollSeconds>30</PollSeconds>
+  <PollSeconds>60</PollSeconds>
   <DialogTimeoutSeconds>120</DialogTimeoutSeconds>
-  <UseToolkitRestartPrompt>false</UseToolkitRestartPrompt>
+  <UseToolkitRestartPrompt>true</UseToolkitRestartPrompt>
   <Title>Omstart av datorn</Title>
   <AcknowledgeButtonText>Jag har läst</AcknowledgeButtonText>
   <OverdueMessage>Datorn har nått gränsen för omstart. Spara ditt arbete och välj Start &gt; Av/på &gt; Starta om så snart som möjligt. Ingen automatisk omstart görs.</OverdueMessage>

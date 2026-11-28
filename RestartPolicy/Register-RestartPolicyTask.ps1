@@ -28,7 +28,7 @@ $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -STA -ExecutionPoli
 if ($Log) { $arguments += ' -Log' }
 $action = New-ScheduledTaskAction -Execute $powerShellPath `
     -Argument $arguments
-$triggers = @(New-ScheduledTaskTrigger -AtStartup; New-ScheduledTaskTrigger -AtLogOn)
+$triggers = @(New-RestartPolicyTaskTrigger -PollSeconds $policy.PollSeconds)
 $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([timespan]::Zero) `
     -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
