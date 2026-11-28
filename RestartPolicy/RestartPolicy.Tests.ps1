@@ -135,7 +135,7 @@ Describe 'RestartPolicy toolkit session bridge' {
             function script:Get-ADTEnvironmentTable { [CmdletBinding()]param() }
             function script:Show-ADTInstallationPrompt {
                 [CmdletBinding()]
-                param($Title, $Subtitle, $Message, $ButtonRightText, $Timeout, [switch]$NoExitOnTimeout)
+                param($Title, $Subtitle, $Message, $ButtonRightText, $ButtonLeftText, $Timeout, [switch]$NoExitOnTimeout)
             }
             function script:Show-ADTInstallationRestartPrompt {
                 [CmdletBinding()]
@@ -255,6 +255,98 @@ Describe 'RestartPolicy toolkit session bridge' {
     }
 }
 
+Describe 'RestartPolicy safe manual demos' {
+    BeforeEach {
+        Mock Get-ADTLoggedOnUser -ModuleName RestartPolicy {
+            [pscustomobject]@{ IsActiveUserSession = $true; SessionId = 1; SID = 'test-sid' }
+        }
+        Mock Initialize-ADTModule -ModuleName RestartPolicy {}
+        Mock Get-ADTEnvironmentTable -ModuleName RestartPolicy {
+            @{ RunAsActiveUser = [pscustomobject]@{ SessionId = 1; SID = 'test-sid' } }
+        }
+        Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { $ButtonRightText }
+        Mock Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy { throw 'A demo must never call the real restart prompt.' }
+        Mock Test-Path -ModuleName RestartPolicy { throw 'A demo must not read registry state.' }
+        Mock Get-ItemProperty -ModuleName RestartPolicy { throw 'A demo must not read acknowledgements.' }
+        Mock New-Item -ModuleName RestartPolicy { throw 'A demo must not create registry state.' }
+        Mock Set-ItemProperty -ModuleName RestartPolicy { throw 'A demo must not write acknowledgements.' }
+        Mock Invoke-RestartPolicyPass -ModuleName RestartPolicy { throw 'A demo must not run the real policy pass.' }
+    }
+
+    It 'previews a reminder regardless of actual uptime and enabled restart prompts: <Minutes>' -ForEach @(
+        @{ Minutes = 360; Text = '6 timmar' }
+        @{ Minutes = 30; Text = '30 minuter' }
+        @{ Minutes = 0; Text = 'Ingen automatisk omstart' }
+    ) {
+        Show-RestartPolicyDemo -Policy $script:policy -MinutesBefore $Minutes | Should -Be 'DemoClosed'
+        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 1 -Exactly -ParameterFilter {
+            $Subtitle -eq 'RestartPolicy - DEMO' -and $Message -match $Text -and
+            $Message -match 'Ingen omstart sker och ingen kvittering sparas' -and
+            $Message -notmatch '\{DeadlineLocal\}' -and $Timeout -eq 120 -and $NoExitOnTimeout
+        }
+        Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
+        Should -Invoke Test-Path -ModuleName RestartPolicy -Times 0
+        Should -Invoke Get-ItemProperty -ModuleName RestartPolicy -Times 0
+        Should -Invoke New-Item -ModuleName RestartPolicy -Times 0
+        Should -Invoke Set-ItemProperty -ModuleName RestartPolicy -Times 0
+        Should -Invoke Invoke-RestartPolicyPass -ModuleName RestartPolicy -Times 0
+    }
+
+    It 'defaults to the earliest configured reminder' {
+        Show-RestartPolicyDemo -Policy $script:policy | Should -Be 'DemoClosed'
+        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 1 -Exactly -ParameterFilter {
+            $Message -match '6 timmar'
+        }
+    }
+
+    It 'simulates a restart prompt safely even when the configured prompt is disabled' {
+        $disabled = $script:policy.PSObject.Copy()
+        $disabled.UseToolkitRestartPrompt = $false
+        $disabled.Reminders = @(
+            [pscustomobject]@{ MinutesBefore = 5; Message = 'Last' }
+            [pscustomobject]@{ MinutesBefore = 60; Message = 'First' }
+        )
+        Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { $ButtonLeftText }
+        Show-RestartPolicyDemo -Policy $disabled -Dialog RestartPrompt | Should -Be 'DemoClosed'
+        $disabled.UseToolkitRestartPrompt | Should -BeFalse
+        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 1 -Exactly -ParameterFilter {
+            $Message -match 'Visuell simulering' -and $Message -match '5 minuter \(inte aktiv i demo\)' -and
+            $ButtonLeftText -eq 'Starta om (demo)' -and $Subtitle -eq 'RestartPolicy - DEMO'
+        }
+        Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
+        Should -Invoke Invoke-RestartPolicyPass -ModuleName RestartPolicy -Times 0
+    }
+
+    It 'rejects a demo stage not present in the configuration' {
+        { Show-RestartPolicyDemo -Policy $script:policy -MinutesBefore 42 } | Should -Throw '*configured reminder*'
+        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 0
+    }
+
+    It 'logs demo timing and result separately from real policy evaluations' {
+        $path = Join-Path $TestDrive 'demo.log'
+        Show-RestartPolicyDemo -Policy $script:policy -Dialog RestartPrompt -LogPath $path | Should -Be 'DemoClosed'
+        $log = Get-Content -LiteralPath $path -Raw
+        $log | Should -Match 'DEMO: RestartPrompt, stage 30'
+        $log | Should -Match 'real boot and acknowledgement state are not read or changed'
+        $log | Should -Match 'DEMO result: DemoClosed'
+        $log | Should -Not -Match 'Restart decision:'
+    }
+
+    It 'handles a missing session without launching either dialog' {
+        Mock Get-ADTLoggedOnUser -ModuleName RestartPolicy {}
+        Show-RestartPolicyDemo -Policy $script:policy -Dialog RestartPrompt | Should -Be 'NoActiveSession'
+        Should -Invoke Show-ADTInstallationPrompt -ModuleName RestartPolicy -Times 0
+        Should -Invoke Show-ADTInstallationRestartPrompt -ModuleName RestartPolicy -Times 0
+    }
+
+    It 'preserves timeout and error reporting in demo mode' {
+        Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { 'Timeout' }
+        Show-RestartPolicyDemo -Policy $script:policy | Should -Be 'Timeout'
+        Mock Show-ADTInstallationPrompt -ModuleName RestartPolicy { throw 'demo dialog failed' }
+        { Show-RestartPolicyDemo -Policy $script:policy } | Should -Throw '*demo dialog failed*'
+    }
+}
+
 Describe 'RestartPolicy per-boot acknowledgement state' {
     BeforeAll {
         InModuleScope RestartPolicy {
@@ -360,6 +452,62 @@ Describe 'RestartPolicy per-boot acknowledgement state' {
         $log | Should -Match 'Reminder due: 180 minutes'
         $log | Should -Match 'Reminder result: NoActiveSession'
         $log | Should -Match 'next scheduled run can try again'
+    }
+
+    It 'logs every threshold and the exact evaluation at a stage boundary' {
+        $path = Join-Path $TestDrive 'stages.log'
+        Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(69) -LogPath $path |
+            Should -Be 'Acknowledged'
+        $lines = Get-Content -LiteralPath $path
+        $stageLines = @($lines | Where-Object { $_ -match '\] Stage:' })
+        $stageLines.Count | Should -Be 4
+        $stageLines[0] | Should -Match 'Stage: 360 .*Reached: True.*Eligible after acknowledgement: False.*AcknowledgedOrSuperseded'
+        $stageLines[1] | Should -Match 'Stage: 180 .*Reached: True.*Eligible after acknowledgement: True.*Selected'
+        $stageLines[2] | Should -Match 'Stage: 30 .*Reached: False.*NotReached'
+        $stageLines[3] | Should -Match 'Stage: 0 .*Reached: False.*NotReached'
+        ($lines -join "`n") | Should -Match 'Uptime: 69.00 hours.*Remaining: 180.00 minutes'
+        ($lines -join "`n") | Should -Match 'last stage: 360 minutes'
+        ($lines -join "`n") | Should -Match 'deadline reached: False.*Selected dialog: Reminder'
+        foreach ($minutes in @(360, 180, 30, 0)) {
+            $expected = $script:boot.AddHours(72).AddMinutes(-$minutes).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+            ($stageLines -join "`n") | Should -Match ([regex]::Escape($expected))
+        }
+    }
+
+    It 'logs skipped stages and the restart countdown when overdue' {
+        Mock Get-ItemProperty -ModuleName RestartPolicy {
+            [pscustomobject]@{ BootTimeUtc = '2025-12-01T00:00:00.0000000+00:00'; LastStageMinutes = 0 }
+        }
+        Mock Show-RestartPolicyReminder -ModuleName RestartPolicy { 'RestartPromptReturned' }
+        $path = Join-Path $TestDrive 'overdue.log'
+        Invoke-RestartPolicyPass -Policy $script:policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(73) -LogPath $path |
+            Should -Be 'RestartPromptReturned'
+        $log = Get-Content -LiteralPath $path -Raw
+        $log | Should -Match 'another Windows boot.*ignored'
+        $log | Should -Match 'Remaining: -60.00 minutes'
+        ([regex]::Matches($log, 'Status: SupersededByMoreUrgentStage')).Count | Should -Be 3
+        $log | Should -Match 'Stage: 0 .*Status: Selected'
+        $log | Should -Match 'deadline reached: True.*Selected dialog: RestartPrompt'
+        $log | Should -Match 'countdown: 1800 seconds from dialog launch'
+    }
+
+    It 'distinguishes reaching the deadline from requesting a restart: <Enabled>' -ForEach @(
+        @{ Enabled = $true }
+        @{ Enabled = $false }
+    ) {
+        $policy = $script:policy.PSObject.Copy()
+        $policy.UseToolkitRestartPrompt = $Enabled
+        Mock Get-ItemProperty -ModuleName RestartPolicy {
+            [pscustomobject]@{ BootTimeUtc = '2026-01-01T00:00:00.0000000+00:00'; LastStageMinutes = 0 }
+        }
+        $path = Join-Path $TestDrive 'suppressed.log'
+        Invoke-RestartPolicyPass -Policy $policy -BootTimeUtc $script:boot -NowUtc $script:boot.AddHours(72) -LogPath $path |
+            Should -Be 'NotDue'
+        $log = Get-Content -LiteralPath $path -Raw
+        $log | Should -Match "deadline reached: True.*Toolkit restart prompt enabled: $Enabled.*Selected dialog: None"
+        $log | Should -Match 'Stage: 0 .*AcknowledgedOrSuperseded'
+        $log | Should -Not -Match 'Restart prompt countdown:'
+        Should -Invoke Show-RestartPolicyReminder -ModuleName RestartPolicy -Times 0
     }
 
     It 'surfaces diagnostic log write errors' {

@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Import-RestartPolicy {
@@ -119,7 +119,8 @@ function Show-RestartPolicyReminder {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Policy,
-        [Parameter(Mandatory)]$Stage
+        [Parameter(Mandatory)]$Stage,
+        [switch]$Demo
     )
 
     if (@(Get-ADTLoggedOnUser -ErrorAction Stop | Where-Object IsActiveUserSession).Count -eq 0) {
@@ -135,7 +136,8 @@ function Show-RestartPolicyReminder {
     }
 
     $lastReminder = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum
-    if ($Policy.UseToolkitRestartPrompt -and $Stage.MinutesBefore -le $lastReminder) {
+    $restartPrompt = $Policy.UseToolkitRestartPrompt -and $Stage.MinutesBefore -le $lastReminder
+    if ($restartPrompt -and -not $Demo) {
         Show-ADTInstallationRestartPrompt -Title $Policy.Title.Replace('[', ('[' + [char]0x2060)) `
             -Subtitle 'RestartPolicy' -CountdownSeconds ($lastReminder * 60) `
             -CountdownNoHideSeconds 30 -ErrorAction Stop
@@ -151,7 +153,20 @@ function Show-RestartPolicyReminder {
         NoExitOnTimeout = $true
         ErrorAction = 'Stop'
     }
+    if ($Demo) {
+        $parameters.Subtitle = 'RestartPolicy - DEMO'
+        $parameters.Message = "DEMO: Ingen omstart sker och ingen kvittering sparas.`n`n$($parameters.Message)"
+        if ($restartPrompt) {
+            # ADT 4.1.8 has no safe preview mode for the real restart dialog.
+            $parameters.Message = "DEMO: Visuell simulering av omstartsuppmaningen. Ingen omstart sker och ingen kvittering sparas.`n`nKonfigurerad nedräkning: $lastReminder minuter (inte aktiv i demo)."
+            $parameters.ButtonLeftText = 'Starta om (demo)'
+            $parameters.ButtonRightText = 'Stäng demo'
+        }
+    }
     $result = Show-ADTInstallationPrompt @parameters
+    if ($Demo -and ($result -ceq $parameters.ButtonRightText -or ($restartPrompt -and $result -ceq $parameters.ButtonLeftText))) {
+        return 'DemoClosed'
+    }
     if ($result -ceq $Policy.AcknowledgeButtonText) {
         return 'Acknowledged'
     }
@@ -159,6 +174,38 @@ function Show-RestartPolicyReminder {
         return 'Timeout'
     }
     throw "Unexpected toolkit dialog result: '$result'. The reminder was not acknowledged."
+}
+
+function Show-RestartPolicyDemo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Policy,
+        [ValidateSet('Reminder', 'RestartPrompt')][string]$Dialog = 'Reminder',
+        [ValidateRange(-1, 2147483647)][int]$MinutesBefore = -1,
+        [string]$LogPath
+    )
+
+    $demoPolicy = $Policy.PSObject.Copy()
+    $demoPolicy.UseToolkitRestartPrompt = $Dialog -eq 'RestartPrompt'
+    if ($Dialog -eq 'RestartPrompt') {
+        $MinutesBefore = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum
+    } elseif ($MinutesBefore -eq -1) {
+        $MinutesBefore = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Maximum).Maximum
+    }
+    if ($MinutesBefore -ne 0 -and $MinutesBefore -notin $Policy.Reminders.MinutesBefore) {
+        throw 'DemoMinutesBefore must match a configured reminder or be 0 for the overdue message.'
+    }
+    $now = [datetimeoffset]::UtcNow
+    $demoBoot = $now.AddHours(-$Policy.RestartAfterHours).AddMinutes($MinutesBefore)
+    $stage = Get-RestartPolicyStage -Policy $demoPolicy -BootTimeUtc $demoBoot -NowUtc $now
+    if ($LogPath) {
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "DEMO: $Dialog, stage $MinutesBefore minutes before deadline. Synthetic timing; real boot and acknowledgement state are not read or changed. No restart will be requested."
+    }
+    $result = Show-RestartPolicyReminder -Policy $demoPolicy -Stage $stage -Demo
+    if ($LogPath) {
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "DEMO result: $result."
+    }
+    return $result
 }
 
 function Write-RestartPolicyDiagnosticLog {
@@ -184,12 +231,16 @@ function Invoke-RestartPolicyPass {
     $statePath = 'HKLM:\SOFTWARE\RestartPolicy'
     $bootId = $BootTimeUtc.ToUniversalTime().ToString('o')
     $lastStage = [int]::MaxValue
+    $stateStatus = 'No acknowledgement for this Windows boot.'
     if (Test-Path -LiteralPath $statePath) {
         $state = Get-ItemProperty -LiteralPath $statePath -ErrorAction Stop
         if ($null -ne $state.PSObject.Properties['BootTimeUtc'] -and $state.BootTimeUtc -eq $bootId) {
             if ($null -ne $state.PSObject.Properties['LastStageMinutes']) {
                 $lastStage = [int]$state.LastStageMinutes
+                $stateStatus = "Acknowledgement matches this Windows boot; last stage: $lastStage minutes before deadline."
             }
+        } else {
+            $stateStatus = 'Stored acknowledgement belongs to another Windows boot or has no boot ID; ignored.'
         }
     }
     $stage = Get-RestartPolicyStage -Policy $Policy -BootTimeUtc $BootTimeUtc -NowUtc $NowUtc -LastStageMinutes $lastStage
@@ -197,6 +248,40 @@ function Invoke-RestartPolicyPass {
         $deadline = $BootTimeUtc.AddHours($Policy.RestartAfterHours)
         $deadlineLocal = $deadline.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
         $bootLocal = $BootTimeUtc.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+        $nowLocal = $NowUtc.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+        $uptimeHours = ($NowUtc - $BootTimeUtc).TotalHours.ToString('F2', [cultureinfo]::InvariantCulture)
+        $remainingMinutes = ($deadline - $NowUtc).TotalMinutes.ToString('F2', [cultureinfo]::InvariantCulture)
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Evaluation: $nowLocal. Uptime: $uptimeHours hours. RestartAfterHours: $($Policy.RestartAfterHours). Remaining: $remainingMinutes minutes (negative = overdue). PollSeconds: $($Policy.PollSeconds)."
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "State: $stateStatus"
+        $allMinutes = @($Policy.Reminders.MinutesBefore | Sort-Object -Descending) + @(0)
+        foreach ($minutes in $allMinutes) {
+            $threshold = $deadline.AddMinutes(-$minutes)
+            $thresholdLocal = $threshold.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+            $reached = $NowUtc -ge $threshold
+            $eligible = $minutes -lt $lastStage
+            $stageStatus = if (-not $eligible) {
+                'AcknowledgedOrSuperseded'
+            } elseif (-not $reached) {
+                'NotReached'
+            } elseif ($null -ne $stage -and $stage.MinutesBefore -eq $minutes) {
+                'Selected'
+            } else {
+                'SupersededByMoreUrgentStage'
+            }
+            Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Stage: $minutes minutes before deadline. Due at: $thresholdLocal. Reached: $reached. Eligible after acknowledgement: $eligible. Status: $stageStatus."
+        }
+        $dialog = if ($null -eq $stage) {
+            'None'
+        } elseif ($Policy.UseToolkitRestartPrompt -and $stage.MinutesBefore -le ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum) {
+            'RestartPrompt'
+        } else {
+            'Reminder'
+        }
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Restart decision: deadline reached: $($NowUtc -ge $deadline). Toolkit restart prompt enabled: $($Policy.UseToolkitRestartPrompt). Selected dialog: $dialog."
+        if ($dialog -eq 'RestartPrompt') {
+            $countdownSeconds = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum * 60
+            Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Restart prompt countdown: $countdownSeconds seconds from dialog launch, not from the deadline. Requires an active session at the policy check; the toolkit can restart silently if that session disappears."
+        }
         if ($null -eq $stage) {
             $nextMinutes = @($Policy.Reminders.MinutesBefore | Where-Object { $_ -lt $lastStage } | Sort-Object -Descending) + @(0)
             if ($lastStage -eq 0) {
@@ -229,4 +314,4 @@ function Invoke-RestartPolicyPass {
     return $result
 }
 
-Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, New-RestartPolicyTaskTrigger, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass, Write-RestartPolicyDiagnosticLog
+Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, New-RestartPolicyTaskTrigger, Get-RestartPolicyStage, Show-RestartPolicyReminder, Show-RestartPolicyDemo, Invoke-RestartPolicyPass, Write-RestartPolicyDiagnosticLog
