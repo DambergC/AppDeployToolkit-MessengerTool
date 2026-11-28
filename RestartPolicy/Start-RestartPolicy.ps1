@@ -5,7 +5,6 @@ Displays XML-configured uptime reminders through PSAppDeployToolkit as SYSTEM or
 [CmdletBinding()]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'RestartPolicy.xml'),
-    [switch]$Once,
     [switch]$Log
 )
 Set-StrictMode -Version Latest
@@ -61,25 +60,21 @@ try {
         $passParameters.LogPath = Join-Path $PSScriptRoot 'RestartPolicy-diagnostic.log'
         Write-RestartPolicyDiagnosticLog -Path $passParameters.LogPath -Message 'RestartPolicy started.'
     }
-    do {
-        try {
-            # LastBootUpTime also includes sleep/hibernate time and is not reset by Fast Startup.
-            $boot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
-            $bootUtc = [datetimeoffset]($boot.ToUniversalTime())
-            $result = Invoke-RestartPolicyPass @passParameters -BootTimeUtc $bootUtc
-            if ($result -ne 'NotDue' -and $result -ne 'NoActiveSession') {
-                Write-ADTLogEntry @logParameters -Message "RestartPolicy dialog result: $result."
-            }
-        } catch {
-            Write-ADTLogEntry @logParameters -Message "RestartPolicy pass failed: $($_.Exception.Message)" -Severity 3
-            if ($Log) {
-                Write-RestartPolicyDiagnosticLog -Path $passParameters.LogPath -Message "RestartPolicy pass failed: $($_.Exception.Message)"
-            }
-            throw
+    try {
+        # LastBootUpTime also includes sleep/hibernate time and is not reset by Fast Startup.
+        $boot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+        $bootUtc = [datetimeoffset]($boot.ToUniversalTime())
+        $result = Invoke-RestartPolicyPass @passParameters -BootTimeUtc $bootUtc
+        if ($result -ne 'NotDue' -and $result -ne 'NoActiveSession') {
+            Write-ADTLogEntry @logParameters -Message "RestartPolicy dialog result: $result."
         }
-        if ($Once) { break }
-        Start-Sleep -Seconds $policy.PollSeconds
-    } while ($true)
+    } catch {
+        Write-ADTLogEntry @logParameters -Message "RestartPolicy pass failed: $($_.Exception.Message)" -Severity 3
+        if ($Log) {
+            Write-RestartPolicyDiagnosticLog -Path $passParameters.LogPath -Message "RestartPolicy pass failed: $($_.Exception.Message)"
+        }
+        throw
+    }
 } finally {
     if ($ownsMutex) { $mutex.ReleaseMutex() }
     $mutex.Dispose()

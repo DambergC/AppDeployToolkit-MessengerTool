@@ -25,6 +25,10 @@ function Import-RestartPolicy {
         throw 'Expected a RestartPolicy root element without an XML namespace.'
     }
     $hours = [int]$root.RestartAfterHours
+    $pollSeconds = [int]$root.PollSeconds
+    if ($pollSeconds % 60 -ne 0) {
+        throw 'PollSeconds must be a whole number of minutes for Windows Task Scheduler.'
+    }
     $reminders = @(
         foreach ($node in $root.Reminders.Reminder) {
             $minutes = [int]$node.MinutesBefore
@@ -46,7 +50,7 @@ function Import-RestartPolicy {
     [pscustomobject]@{
         ToolkitModulePath = $toolkitPath
         RestartAfterHours = $hours
-        PollSeconds = [int]$root.PollSeconds
+        PollSeconds = $pollSeconds
         DialogTimeoutSeconds = [int]$root.DialogTimeoutSeconds
         UseToolkitRestartPrompt = ($null -ne $restartPromptNode -and [System.Xml.XmlConvert]::ToBoolean($restartPromptNode.InnerText.Trim()))
         Title = $root.Title.Trim()
@@ -66,6 +70,19 @@ function Assert-RestartPolicyExecutionContext {
     if (-not $IsSystem -and -not $IsAdministrator) {
         throw 'Run RestartPolicy as SYSTEM or from an elevated administrator PowerShell session.'
     }
+}
+
+function New-RestartPolicyTaskTrigger {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$PollSeconds)
+
+    $dailyTrigger = New-ScheduledTaskTrigger -Daily -At '00:00'
+    $repeatingTrigger = New-ScheduledTaskTrigger -Once -At '00:00' `
+        -RepetitionInterval (New-TimeSpan -Seconds $PollSeconds) -RepetitionDuration (New-TimeSpan -Days 1)
+    $dailyTrigger.Repetition = $repeatingTrigger.Repetition
+    New-ScheduledTaskTrigger -AtStartup
+    New-ScheduledTaskTrigger -AtLogOn
+    $dailyTrigger
 }
 
 function Get-RestartPolicyStage {
@@ -205,11 +222,11 @@ function Invoke-RestartPolicyPass {
     if ($LogPath) {
         $message = "Reminder result: $result."
         if ($result -eq 'NoActiveSession' -or $result -eq 'Timeout' -or $result -eq 'RestartPromptReturned') {
-            $message += " The policy will check again after $($Policy.PollSeconds) seconds if it keeps running."
+            $message += ' The next scheduled run can try again.'
         }
         Write-RestartPolicyDiagnosticLog -Path $LogPath -Message $message
     }
     return $result
 }
 
-Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass, Write-RestartPolicyDiagnosticLog
+Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, New-RestartPolicyTaskTrigger, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass, Write-RestartPolicyDiagnosticLog
