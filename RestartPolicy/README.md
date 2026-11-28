@@ -94,6 +94,14 @@ Kvitteringar sparas över processomstarter. Ändringar av policy/tider återvisa
 
 Dialogresultat och körfel loggas via `Write-ADTLogEntry` med källan `RestartPolicy` i filen `RestartPolicy.log` under toolkitets `Toolkit.LogPath` (standard `C:\Windows\Logs\Software`). Loggfil och loggformat anges uttryckligen eftersom ingen installationssession öppnas. Fel före logginitiering skrivs som terminerande PowerShell-fel och ger misslyckad aktivitet. Skriptet stoppar vid körfel i stället för att markera varningen som kvitterad.
 
+För extra diagnostik, ange `-Log` vid manuell körning av `Start-RestartPolicy.ps1` eller vid registrering av aktiviteten:
+
+```powershell
+& "$root\Register-RestartPolicyTask.ps1" -ConfigPath "$root\RestartPolicy.xml" -Log
+```
+
+Detta lägger till tidsstämplade rader i `RestartPolicy-diagnostic.log` i samma katalog som skriptet. Varje kontroll visar senaste start, omstartsgränsen och om en påminnelse är aktuell; annars anges tiden för nästa möjliga påminnelse eller att slutpåminnelsen redan kvitterats. Resultat som saknad aktiv session och timeout loggas också. Tider anges i lokal tid med UTC-offset. Loggen växer vid varje kontroll och måste vid behov rensas enligt er rutin. SYSTEM eller administratören som kör skriptet behöver skrivrättighet i katalogen; behåll skyddet mot skrivning för vanliga användare. Loggfel stoppar körningen. Fel före diagnostikloggens initiering visas som terminerande PowerShell-fel. Utan `-Log` skapas ingen diagnostiklogg och den ordinarie toolkit-loggen påverkas inte.
+
 ```powershell
 Get-ScheduledTask -TaskName 'RestartPolicy'
 Get-ScheduledTaskInfo -TaskName 'RestartPolicy'

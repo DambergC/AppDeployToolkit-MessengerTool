@@ -2,7 +2,8 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'RestartPolicy.xml'),
-    [string]$TaskName = 'RestartPolicy'
+    [string]$TaskName = 'RestartPolicy',
+    [switch]$Log
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -23,8 +24,10 @@ if ($manifest.Name -ne 'PSAppDeployToolkit' -or $manifest.Version -ne [version]'
     throw 'RestartPolicy requires the locally packaged PSAppDeployToolkit 4.1.8 manifest.'
 }
 $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -STA -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$ConfigPath`""
+if ($Log) { $arguments += ' -Log' }
 $action = New-ScheduledTaskAction -Execute $powerShellPath `
-    -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -STA -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$ConfigPath`""
+    -Argument $arguments
 $triggers = @(New-ScheduledTaskTrigger -AtStartup; New-ScheduledTaskTrigger -AtLogOn)
 $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([timespan]::Zero) `

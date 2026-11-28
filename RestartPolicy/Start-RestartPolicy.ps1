@@ -5,7 +5,8 @@ Displays XML-configured uptime reminders through PSAppDeployToolkit as SYSTEM or
 [CmdletBinding()]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'RestartPolicy.xml'),
-    [switch]$Once
+    [switch]$Once,
+    [switch]$Log
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -55,17 +56,25 @@ try {
     }
     if (-not $ownsMutex) { throw 'Another RestartPolicy instance is already running.' }
     Write-ADTLogEntry @logParameters -Message "RestartPolicy started. Toolkit restart prompt enabled: $($policy.UseToolkitRestartPrompt)."
+    $passParameters = @{ Policy = $policy }
+    if ($Log) {
+        $passParameters.LogPath = Join-Path $PSScriptRoot 'RestartPolicy-diagnostic.log'
+        Write-RestartPolicyDiagnosticLog -Path $passParameters.LogPath -Message 'RestartPolicy started.'
+    }
     do {
         try {
             # LastBootUpTime also includes sleep/hibernate time and is not reset by Fast Startup.
             $boot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
             $bootUtc = [datetimeoffset]($boot.ToUniversalTime())
-            $result = Invoke-RestartPolicyPass -Policy $policy -BootTimeUtc $bootUtc
+            $result = Invoke-RestartPolicyPass @passParameters -BootTimeUtc $bootUtc
             if ($result -ne 'NotDue' -and $result -ne 'NoActiveSession') {
                 Write-ADTLogEntry @logParameters -Message "RestartPolicy dialog result: $result."
             }
         } catch {
             Write-ADTLogEntry @logParameters -Message "RestartPolicy pass failed: $($_.Exception.Message)" -Severity 3
+            if ($Log) {
+                Write-RestartPolicyDiagnosticLog -Path $passParameters.LogPath -Message "RestartPolicy pass failed: $($_.Exception.Message)"
+            }
             throw
         }
         if ($Once) { break }
