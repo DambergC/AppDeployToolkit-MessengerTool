@@ -25,7 +25,7 @@ En vanlig dialog stängs efter `DialogTimeoutSeconds` om den inte kvitteras. Tim
 
 - Windows 11, 64-bitars Windows PowerShell 5.1, samt lokal administratör vid installation.
 - Hela denna mapp inklusive XSD-filen och en lokalt paketerad, oförändrad PSAppDeployToolkit **4.1.8**. Ingen hämtning sker vid körning.
-- Skriptet körs som **SYSTEM**. Toolkitets `Get-ADTLoggedOnUser`, `Initialize-ADTModule`, `Get-ADTEnvironmentTable`, `Show-ADTInstallationPrompt` och `Show-ADTInstallationRestartPrompt` hanterar dialogerna. Ingen egen toast-/UI-motor eller användarprocessstart implementeras.
+- Den schemalagda aktiviteten körs som **SYSTEM**. Manuell körning av `Start-RestartPolicy.ps1` kan även göras från en förhöjd administratörssession för test. En vanlig icke-eleverad användare nekas eftersom kvittenser delas i HKLM. Toolkitets `Get-ADTLoggedOnUser`, `Initialize-ADTModule`, `Get-ADTEnvironmentTable`, `Show-ADTInstallationPrompt` och `Show-ADTInstallationRestartPrompt` hanterar dialogerna. Ingen egen toast-/UI-motor eller användarprocessstart implementeras.
 
 Exempel på placering (toolkitets övriga filer och underkataloger måste också finnas):
 
@@ -100,7 +100,16 @@ Get-ScheduledTaskInfo -TaskName 'RestartPolicy'
 Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\RestartPolicy' -ErrorAction SilentlyContinue
 ```
 
-För en begränsad engångskörning kan `Start-RestartPolicy.ps1 -ConfigPath <sökväg> -Once` användas i en separat SYSTEM-process. Stoppa den ordinarie aktiviteten först. Verktyget avvisar vanlig användar-/administratörskörning för att inte blanda behörigheter eller läsa olika registervyer.
+För en begränsad engångskörning kan `Start-RestartPolicy.ps1 -ConfigPath <sökväg> -Once` användas i en separat SYSTEM-process eller i en förhöjd administratörssession. Stoppa den ordinarie aktiviteten först. Kör sedan exempelvis följande från förhöjd, 64-bitars PowerShell:
+
+```powershell
+$root = 'C:\Program Files\AppDeployToolkit-MessengerTool\RestartPolicy'
+Stop-ScheduledTask -TaskName 'RestartPolicy' -ErrorAction SilentlyContinue
+& (Join-Path $root 'Start-RestartPolicy.ps1') `
+  -ConfigPath (Join-Path $root 'RestartPolicy.xml') -Once
+```
+
+Administratörsläget använder samma HKLM-status och samma toolkit-sessionbrygga som SYSTEM-läget; en aktiv användarsession krävs fortfarande för att visa dialogen. `-Once` visar bara en påminnelse om aktuell starttid passerat en konfigurerad tröskel.
 
 Kör de isolerade Pester 5-testerna manuellt från repots rot:
 

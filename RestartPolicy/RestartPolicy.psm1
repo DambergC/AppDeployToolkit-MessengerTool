@@ -56,6 +56,18 @@ function Import-RestartPolicy {
     }
 }
 
+function Assert-RestartPolicyExecutionContext {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][bool]$IsSystem,
+        [Parameter(Mandatory)][bool]$IsAdministrator
+    )
+
+    if (-not $IsSystem -and -not $IsAdministrator) {
+        throw 'Run RestartPolicy as SYSTEM or from an elevated administrator PowerShell session.'
+    }
+}
+
 function Get-RestartPolicyStage {
     [CmdletBinding()]
     param(
@@ -164,4 +176,4 @@ function Invoke-RestartPolicyPass {
     return $result
 }
 
-Export-ModuleMember -Function Import-RestartPolicy, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass
+Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass

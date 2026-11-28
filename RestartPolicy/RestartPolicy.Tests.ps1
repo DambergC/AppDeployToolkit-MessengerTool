@@ -61,6 +61,15 @@ Describe 'RestartPolicy XML configuration' {
     }
 }
 
+Describe 'RestartPolicy execution context' {
+    It 'allows SYSTEM and elevated administrators but rejects standard users' {
+        { Assert-RestartPolicyExecutionContext -IsSystem $true -IsAdministrator $false } | Should -Not -Throw
+        { Assert-RestartPolicyExecutionContext -IsSystem $false -IsAdministrator $true } | Should -Not -Throw
+        { Assert-RestartPolicyExecutionContext -IsSystem $false -IsAdministrator $false } |
+            Should -Throw '*elevated administrator*'
+    }
+}
+
 Describe 'RestartPolicy timing' {
     It 'selects the most urgent due stage at <Hours> hours' -ForEach @(
         @{ Hours = 48; Expected = -1 }
