@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Displays XML-configured uptime reminders through PSAppDeployToolkit as SYSTEM.
+Displays XML-configured uptime reminders through PSAppDeployToolkit as SYSTEM or an elevated administrator.
 #>
 [CmdletBinding()]
 param(
@@ -13,10 +13,17 @@ $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne 'Win32NT' -or -not [Environment]::Is64BitProcess) {
     throw 'RestartPolicy requires 64-bit PowerShell on Windows.'
 }
-if (-not [System.Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
-    throw 'Run RestartPolicy as SYSTEM using Register-RestartPolicyTask.ps1.'
-}
 Import-Module (Join-Path $PSScriptRoot 'RestartPolicy.psm1') -Force -ErrorAction Stop
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdministrator = $identity.IsSystem
+if (-not $isAdministrator) {
+    $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+    $isAdministrator = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+Assert-RestartPolicyExecutionContext -IsSystem $identity.IsSystem -IsAdministrator $isAdministrator
+if (-not $identity.IsSystem) {
+    Write-Verbose 'Running RestartPolicy as an elevated administrator; HKLM state is machine-wide.'
+}
 $policy = Import-RestartPolicy -Path $ConfigPath
 $manifest = Test-ModuleManifest -Path $policy.ToolkitModulePath -ErrorAction Stop
 if ($manifest.Name -ne 'PSAppDeployToolkit' -or $manifest.Version -ne [version]'4.1.8') {
