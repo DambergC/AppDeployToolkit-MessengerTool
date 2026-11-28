@@ -1,11 +1,20 @@
 <#
 .SYNOPSIS
 Displays XML-configured uptime reminders through PSAppDeployToolkit as SYSTEM or an elevated administrator.
+.PARAMETER Demo
+Displays a reminder without checking real uptime or recording acknowledgement.
+.PARAMETER DemoMinutesBefore
+Selects a configured reminder for Demo; 0 selects the overdue message. Defaults to the earliest reminder.
+.PARAMETER DemoRestartPrompt
+Displays a static image of the packaged toolkit restart dialog, without interactive restart controls or an active countdown.
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Policy')]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'RestartPolicy.xml'),
-    [switch]$Log
+    [switch]$Log,
+    [Parameter(Mandatory, ParameterSetName = 'DemoReminder')][switch]$Demo,
+    [Parameter(ParameterSetName = 'DemoReminder')][ValidateRange(0, 2147483647)][int]$DemoMinutesBefore,
+    [Parameter(Mandatory, ParameterSetName = 'DemoRestart')][switch]$DemoRestartPrompt
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -21,6 +30,9 @@ if (-not $isAdministrator) {
     $isAdministrator = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 Assert-RestartPolicyExecutionContext -IsSystem $identity.IsSystem -IsAdministrator $isAdministrator
+if (($Demo -or $DemoRestartPrompt) -and $identity.IsSystem) {
+    throw 'Demo mode is only supported from a manual elevated administrator session, not as SYSTEM.'
+}
 if (-not $identity.IsSystem) {
     Write-Verbose 'Running RestartPolicy as an elevated administrator; HKLM state is machine-wide.'
 }
@@ -30,7 +42,7 @@ if ($manifest.Name -ne 'PSAppDeployToolkit' -or $manifest.Version -ne [version]'
     throw 'RestartPolicy requires the locally packaged PSAppDeployToolkit 4.1.8 manifest.'
 }
 Import-Module -Name $policy.ToolkitModulePath -Force -ErrorAction Stop
-foreach ($command in @('Show-ADTInstallationPrompt', 'Show-ADTInstallationRestartPrompt', 'Get-ADTLoggedOnUser', 'Initialize-ADTModule', 'Get-ADTEnvironmentTable', 'Get-ADTConfig', 'Write-ADTLogEntry')) {
+foreach ($command in @('Show-ADTInstallationPrompt', 'Show-ADTInstallationRestartPrompt', 'Get-ADTLoggedOnUser', 'Initialize-ADTModule', 'Get-ADTEnvironmentTable', 'Get-ADTConfig', 'Get-ADTStringTable', 'Write-ADTLogEntry')) {
     $null = Get-Command -Name $command -Module PSAppDeployToolkit -ErrorAction Stop
 }
 Initialize-ADTModule -ErrorAction Stop
@@ -61,10 +73,19 @@ try {
         Write-RestartPolicyDiagnosticLog -Path $passParameters.LogPath -Message 'RestartPolicy started.'
     }
     try {
-        # LastBootUpTime also includes sleep/hibernate time and is not reset by Fast Startup.
-        $boot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
-        $bootUtc = [datetimeoffset]($boot.ToUniversalTime())
-        $result = Invoke-RestartPolicyPass @passParameters -BootTimeUtc $bootUtc
+        if ($Demo -or $DemoRestartPrompt) {
+            $passParameters.Dialog = if ($DemoRestartPrompt) { 'RestartPrompt' } else { 'Reminder' }
+            if ($PSBoundParameters.ContainsKey('DemoMinutesBefore')) {
+                $passParameters.MinutesBefore = $DemoMinutesBefore
+            }
+            Write-ADTLogEntry @logParameters -Message 'DEMO: No real uptime check, acknowledgement write or restart. Restart prompt preview is a static image of the packaged toolkit dialog.'
+            $result = Show-RestartPolicyDemo @passParameters
+        } else {
+            # LastBootUpTime also includes sleep/hibernate time and is not reset by Fast Startup.
+            $boot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+            $bootUtc = [datetimeoffset]($boot.ToUniversalTime())
+            $result = Invoke-RestartPolicyPass @passParameters -BootTimeUtc $bootUtc
+        }
         if ($result -ne 'NotDue' -and $result -ne 'NoActiveSession') {
             Write-ADTLogEntry @logParameters -Message "RestartPolicy dialog result: $result."
         }

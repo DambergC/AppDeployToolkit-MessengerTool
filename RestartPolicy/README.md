@@ -100,7 +100,11 @@ För extra diagnostik, ange `-Log` vid manuell körning av `Start-RestartPolicy.
 & "$root\Register-RestartPolicyTask.ps1" -ConfigPath "$root\RestartPolicy.xml" -Log
 ```
 
-Detta lägger till tidsstämplade rader i `RestartPolicy-diagnostic.log` i samma katalog som skriptet. Varje kontroll visar senaste start, omstartsgränsen och om en påminnelse är aktuell; annars anges tiden för nästa möjliga påminnelse eller att slutpåminnelsen redan kvitterats. Resultat som saknad aktiv session och timeout loggas också. Tider anges i lokal tid med UTC-offset. Loggen växer vid varje kontroll och måste vid behov rensas enligt er rutin. SYSTEM eller administratören som kör skriptet behöver skrivrättighet i katalogen; behåll skyddet mot skrivning för vanliga användare. Loggfel stoppar körningen. Fel före diagnostikloggens initiering visas som terminerande PowerShell-fel. Utan `-Log` skapas ingen diagnostiklogg och den ordinarie toolkit-loggen påverkas inte.
+Detta lägger till tidsstämplade rader i `RestartPolicy-diagnostic.log` i samma katalog som skriptet. Varje kontroll visar kontrolltid, senaste Windows-start, förfluten tid, `RestartAfterHours`, återstående minuter (negativt efter gränsen), omstartsgränsen och kontrollintervallet. Kvitteringsstatus visar om sparad status gäller denna Windows-start eller ignoreras efter en annan start.
+
+**Alla konfigurerade varningssteg samt gränsen (0 minuter)** loggas i tidsordning med beräknad tid, om tröskeln passerats, om kvitteringar tillåter steget och dess status: `NotReached` (inte dags), `Selected` (valt nu), `AcknowledgedOrSuperseded` (kvitterat eller äldre än ett kvitterat steg) eller `SupersededByMoreUrgentStage` (ett senare steg väljs vid exempelvis sen inloggning). `Restart decision` skiljer mellan att tidsgränsen har nåtts och att en dialog faktiskt valts: `None`, `Reminder` eller `RestartPrompt`. För omstartsdialogen loggas även nedräkningens längd och att den räknas från dialogstart, inte från omstartsgränsen. Detta är beslutet före sessionskontrollen, inte ett besked om att datorn redan har startats om.
+
+Om inget steg valts anges nästa möjliga påminnelse eller att slutpåminnelsen redan kvitterats. Resultat som saknad aktiv session och timeout loggas också. Tider anges i lokal tid med UTC-offset. Loggen växer vid varje kontroll och måste vid behov rensas enligt er rutin. SYSTEM eller administratören som kör skriptet behöver skrivrättighet i katalogen; behåll skyddet mot skrivning för vanliga användare. Loggfel stoppar körningen. Fel före diagnostikloggens initiering visas som terminerande PowerShell-fel. Utan `-Log` skapas ingen diagnostiklogg och den ordinarie toolkit-loggen påverkas inte.
 
 ```powershell
 Get-ScheduledTask -TaskName 'RestartPolicy'
@@ -119,6 +123,32 @@ Stop-ScheduledTask -TaskName 'RestartPolicy' -ErrorAction SilentlyContinue
 
 Administratörsläget använder samma HKLM-status och samma toolkit-sessionbrygga som SYSTEM-läget; en aktiv användarsession krävs fortfarande för att visa dialogen. Körningen visar bara en påminnelse om aktuell starttid passerat en konfigurerad tröskel.
 
+### Visa dialoger manuellt i demoläge
+
+Stoppa den schemalagda aktiviteten först och kör från **förhöjd, 64-bitars PowerShell**, med en aktiv användarsession:
+
+```powershell
+$root = 'E:\Restart'
+Stop-ScheduledTask -TaskName 'RestartPolicy'
+# Visa den första konfigurerade varningen, oavsett verklig starttid.
+& "$root\Start-RestartPolicy.ps1" -ConfigPath "$root\RestartPolicy.xml" -Demo -Log
+# Visa ett specifikt konfigurerat steg; 0 visar OverdueMessage.
+& "$root\Start-RestartPolicy.ps1" -ConfigPath "$root\RestartPolicy.xml" -Demo -DemoMinutesBefore 30 -Log
+& "$root\Start-RestartPolicy.ps1" -ConfigPath "$root\RestartPolicy.xml" -Demo -DemoMinutesBefore 0 -Log
+# Visa en statisk bild av toolkitets riktiga omstartsdialog.
+& "$root\Start-RestartPolicy.ps1" -ConfigPath "$root\RestartPolicy.xml" -DemoRestartPrompt -Log
+```
+
+`-Demo` och `-DemoRestartPrompt` kan inte kombineras och stöds inte som SYSTEM eller via registreringsskriptet. `-DemoMinutesBefore` kräver `-Demo` och ska motsvara ett konfigurerat `MinutesBefore` eller vara 0. Utan stegval visas varningen med högst `MinutesBefore`. XML och toolkit valideras som vanligt; demoläget använder syntetiska tider för meddelandet men **läser inte datorns starttid eller kvitteringar och sparar ingen kvittering**. Den vanliga varningsdemon använder XML-texten även för sista steget när `UseToolkitRestartPrompt` är `true`.
+
+**Ingen demo startar om datorn.** `-DemoRestartPrompt` renderar en **statisk bild av den lokalt paketerade omstartsdialogen**, med konfigurerad titel, toolkitets språk, grafik, dialogstil (`Fluent` eller `Classic`) och nedräkningens startvärde. Bilden visas i ett separat, tydligt DEMO-märkt fönster. Knapparna i bilden är inte interaktiva och nedräkningen är inte aktiv; endast förhandsvisningens `Stäng demo`-knapp fungerar.
+
+Den riktiga dialogen visas aldrig: dess inaktiva timer avvecklas före rendering, kontrollträdet omvandlas till en oföränderlig bild och originaldialogen stängs/avvecklas innan bildfönstret visas. Ingen tyst omstartsväg i `Show-ADTInstallationRestartPrompt` anropas. Eftersom toolkitet inte har ett offentligt API för detta används dess interna, versionslåsta **4.1.8**-konstruktorer endast för bildrenderingen; toolkitets filer ändras inte. API-/renderingsfel stoppar demon med fel, utan att falla tillbaka till en aktiv omstartsdialog.
+
+Omstartsförhandsvisningen körs på den manuella PowerShell-sessionens skrivbord och kräver **STA**. Starta vid behov `powershell.exe -STA` eller `pwsh.exe -STA` som administratör. XML behöver inte ändras för att välja demo. `-Log` märker demohändelser separat som `DEMO`, och timeout, saknad session och fel rapporteras som vanligt.
+
+Starta aktiviteten igen med `Start-ScheduledTask -TaskName 'RestartPolicy'` när demon är klar. **Då gäller den verkliga policyn igen**, inklusive eventuell automatisk omstart om `UseToolkitRestartPrompt` är `true`.
+
 Kör de isolerade Pester 5-testerna manuellt från repots rot:
 
 ```powershell
@@ -126,7 +156,7 @@ Invoke-Pester -Path .\RestartPolicy\RestartPolicy.Tests.ps1 -CI
 Invoke-ScriptAnalyzer -Path .\RestartPolicy -Recurse -Severity Error
 ```
 
-Testerna simulerar klocka, register och toolkit för att täcka exakta tidsgränser, XML-fel, sena inloggningar, kvitteringar och sessionsbryggan. De ändrar inte datorns starttid eller dess riktiga HKLM-status och körs även i repots CI. Verifiera dessutom på en Windows 11-pilot: interaktiv dialog från SYSTEM, ingen inloggad användare, användarbyte, vila, processomstart och riktig Windows-omstart. Detta kan inte ersättas av mockade tester.
+Testerna simulerar klocka, register och toolkit för att täcka exakta tidsgränser, XML-fel, sena inloggningar, kvitteringar och sessionsbryggan. Windows-tester renderar dessutom bilder från båda de paketerade omstartsdialogstilarna utan att visa originaldialogen. Testerna ändrar inte datorns starttid eller dess riktiga HKLM-status och körs även i repots CI. Verifiera dessutom på en Windows 11-pilot: båda demostilarnas utseende och stängning/timeout, interaktiv dialog från SYSTEM, ingen inloggad användare, användarbyte, vila, processomstart och riktig Windows-omstart. Detta kan inte ersättas av mockade tester.
 
 ## Avinstallation
 

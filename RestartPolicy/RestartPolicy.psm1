@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Import-RestartPolicy {
@@ -119,7 +119,8 @@ function Show-RestartPolicyReminder {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Policy,
-        [Parameter(Mandatory)]$Stage
+        [Parameter(Mandatory)]$Stage,
+        [switch]$Demo
     )
 
     if (@(Get-ADTLoggedOnUser -ErrorAction Stop | Where-Object IsActiveUserSession).Count -eq 0) {
@@ -135,11 +136,15 @@ function Show-RestartPolicyReminder {
     }
 
     $lastReminder = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum
-    if ($Policy.UseToolkitRestartPrompt -and $Stage.MinutesBefore -le $lastReminder) {
+    $restartPrompt = $Policy.UseToolkitRestartPrompt -and $Stage.MinutesBefore -le $lastReminder
+    if ($restartPrompt -and -not $Demo) {
         Show-ADTInstallationRestartPrompt -Title $Policy.Title.Replace('[', ('[' + [char]0x2060)) `
             -Subtitle 'RestartPolicy' -CountdownSeconds ($lastReminder * 60) `
             -CountdownNoHideSeconds 30 -ErrorAction Stop
         return 'RestartPromptReturned'
+    }
+    if ($restartPrompt -and $Demo) {
+        return Show-RestartPolicyRestartPreview -Policy $Policy
     }
 
     $parameters = @{
@@ -151,7 +156,14 @@ function Show-RestartPolicyReminder {
         NoExitOnTimeout = $true
         ErrorAction = 'Stop'
     }
+    if ($Demo) {
+        $parameters.Subtitle = 'RestartPolicy - DEMO'
+        $parameters.Message = "DEMO: Ingen omstart sker och ingen kvittering sparas.`n`n$($parameters.Message)"
+    }
     $result = Show-ADTInstallationPrompt @parameters
+    if ($Demo -and $result -ceq $parameters.ButtonRightText) {
+        return 'DemoClosed'
+    }
     if ($result -ceq $Policy.AcknowledgeButtonText) {
         return 'Acknowledged'
     }
@@ -159,6 +171,191 @@ function Show-RestartPolicyReminder {
         return 'Timeout'
     }
     throw "Unexpected toolkit dialog result: '$result'. The reminder was not acknowledged."
+}
+
+function New-RestartPolicyRestartPreviewImage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Policy)
+
+    if ([Environment]::OSVersion.Platform -ne 'Win32NT' -or [System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+        throw 'Restart preview requires Windows PowerShell in STA mode. Start powershell.exe -STA or pwsh.exe -STA.'
+    }
+    $toolkitModule = (Get-Command Get-ADTStringTable -Module PSAppDeployToolkit -ErrorAction Stop).Module
+    if ($toolkitModule.Version -ne [version]'4.1.8') {
+        throw 'Restart preview requires the locally packaged PSAppDeployToolkit 4.1.8.'
+    }
+    $language = & $toolkitModule { $Script:ADT.Language }
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing -ErrorAction Stop
+    if ($null -eq [System.Windows.Application]::Current) {
+        $application = [System.Windows.Application]::new()
+        $application.ShutdownMode = [System.Windows.ShutdownMode]::OnExplicitShutdown
+    }
+    $config = Get-ADTConfig -ErrorAction Stop
+    $strings = Get-ADTStringTable -ErrorAction Stop
+    $countdown = [timespan]::FromMinutes(($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum)
+    $options = @{
+        AppTitle = $Policy.Title.Replace('[', ('[' + [char]0x2060))
+        Subtitle = 'RestartPolicy'
+        AppIconImage = $config.Assets.Logo
+        AppIconDarkImage = $config.Assets.LogoDark
+        AppBannerImage = $config.Assets.Banner
+        DialogTopMost = $false
+        Language = $language
+        Strings = $strings.RestartPrompt
+        CountdownDuration = $countdown
+        CountdownNoMinimizeDuration = [timespan]::FromSeconds(30)
+    }
+    if ($null -ne $config.UI.FluentAccentColor) {
+        $options.FluentAccentColor = $config.UI.FluentAccentColor
+    }
+    $options = [PSADT.UserInterface.DialogOptions.RestartDialogOptions]::new([PSADT.Module.DeploymentType]::Install, $options)
+    $style = [string]$config.UI.DialogStyle
+    if ($style -notin @('Fluent', 'Classic')) {
+        throw "Unsupported toolkit dialog style for restart preview: '$style'."
+    }
+    $flags = [System.Reflection.BindingFlags]'Instance, NonPublic'
+    $type = $options.GetType().Assembly.GetType("PSADT.UserInterface.Dialogs.$style.RestartDialog", $true)
+    $constructor = $type.GetConstructor($flags, $null, @($options.GetType()), $null)
+    if ($null -eq $constructor) {
+        throw 'The packaged toolkit restart dialog does not match the expected 4.1.8 constructor.'
+    }
+    $dialog = $constructor.Invoke(@($options))
+    try {
+        # Render an unshown dialog to pixels only. Dispose its dormant timer before any layout.
+        # The original controls are never attached to the preview or given a message loop.
+        $timerType = if ($style -eq 'Fluent') { $type.BaseType } else { $type }
+        $timerName = if ($style -eq 'Fluent') { '_countdownTimer' } else { 'countdownTimer' }
+        $timerField = $timerType.GetField($timerName, $flags)
+        if ($null -eq $timerField -or $null -eq ($timer = $timerField.GetValue($dialog))) {
+            throw 'The packaged toolkit restart timer does not match the expected 4.1.8 preview contract.'
+        }
+        $timer.Dispose()
+        $countdownText = $countdown.ToString('hh\:mm\:ss')
+        if ($style -eq 'Fluent') {
+            $null = $type.BaseType.GetMethod('UpdateCountdownDisplay', $flags).Invoke($dialog, @())
+            $null = $type.BaseType.GetMethod('UpdateButtonLayout', $flags).Invoke($dialog, @())
+            $null = $type.BaseType.GetMethod('UpdateRowDefinition', $flags).Invoke($dialog, @())
+            $visual = $dialog.Content
+            $width = if ([double]::IsNaN($dialog.Width)) { $dialog.MinWidth } else { $dialog.Width }
+            if ($width -le 0 -or [double]::IsInfinity($width)) {
+                throw 'The packaged Fluent restart dialog has no finite preview width.'
+            }
+            $visual.Measure([System.Windows.Size]::new($width, [double]::PositiveInfinity))
+            $bounds = [System.Windows.Rect]::new(0, 0, $width, $visual.DesiredSize.Height)
+            $visual.Arrange($bounds)
+            $drawing = [System.Windows.Media.DrawingVisual]::new()
+            $context = $drawing.RenderOpen()
+            try {
+                $context.DrawRectangle($dialog.Background, $null, $bounds)
+                $context.DrawRectangle([System.Windows.Media.VisualBrush]::new($visual), $null, $bounds)
+            } finally {
+                $context.Close()
+            }
+            $image = [System.Windows.Media.Imaging.RenderTargetBitmap]::new(
+                [int][math]::Ceiling($bounds.Width), [int][math]::Ceiling($bounds.Height), 96, 96,
+                [System.Windows.Media.PixelFormats]::Pbgra32)
+            $image.Render($drawing)
+        } else {
+            $type.GetField('labelCountdown', $flags).GetValue($dialog).Text = $countdownText
+            $dialog.PerformLayout()
+            $bitmap = [System.Drawing.Bitmap]::new($dialog.Width, $dialog.Height)
+            $stream = [System.IO.MemoryStream]::new()
+            try {
+                $dialog.DrawToBitmap($bitmap, [System.Drawing.Rectangle]::new(0, 0, $bitmap.Width, $bitmap.Height))
+                $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+                $stream.Position = 0
+                $image = [System.Windows.Media.Imaging.BitmapImage]::new()
+                $image.BeginInit()
+                $image.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                $image.StreamSource = $stream
+                $image.EndInit()
+            } finally {
+                $bitmap.Dispose()
+                $stream.Dispose()
+            }
+        }
+        $image.Freeze()
+        return $image
+    } finally {
+        if ($style -eq 'Classic') { $dialog.Dispose() } else { $dialog.Close() }
+    }
+}
+
+function Show-RestartPolicyRestartPreview {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Policy)
+
+    $image = New-RestartPolicyRestartPreviewImage -Policy $Policy
+    $window = [System.Windows.Window]::new()
+    $window.Title = 'RestartPolicy - DEMO'
+    $window.SizeToContent = [System.Windows.SizeToContent]::WidthAndHeight
+    $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
+    $window.Tag = 'DemoClosed'
+    $panel = [System.Windows.Controls.StackPanel]::new()
+    $notice = [System.Windows.Controls.TextBlock]::new()
+    $notice.Text = "DEMO: Statisk bild av omstartsdialogen.`nIngen aktiv nedräkning, omstart eller sparad kvittering."
+    $notice.Margin = [System.Windows.Thickness]::new(12)
+    $panel.Children.Add($notice) | Out-Null
+    $picture = [System.Windows.Controls.Image]::new()
+    $picture.Source = $image
+    $picture.IsHitTestVisible = $false
+    $scroll = [System.Windows.Controls.ScrollViewer]::new()
+    $scroll.MaxWidth = [System.Windows.SystemParameters]::WorkArea.Width - 80
+    $scroll.MaxHeight = [System.Windows.SystemParameters]::WorkArea.Height - 160
+    $scroll.Content = $picture
+    $panel.Children.Add($scroll) | Out-Null
+    $close = [System.Windows.Controls.Button]::new()
+    $close.Content = 'Stäng demo'
+    $close.Margin = [System.Windows.Thickness]::new(12)
+    $close.Add_Click({ $window.Close() })
+    $panel.Children.Add($close) | Out-Null
+    $window.Content = $panel
+    $timeout = [System.Windows.Threading.DispatcherTimer]::new()
+    $timeout.Interval = [timespan]::FromSeconds($Policy.DialogTimeoutSeconds)
+    $timeout.Add_Tick({ $window.Tag = 'Timeout'; $window.Close() })
+    try {
+        $timeout.Start()
+        $null = $window.ShowDialog()
+        return $window.Tag
+    } finally {
+        $timeout.Stop()
+        $window.Close()
+    }
+}
+
+function Show-RestartPolicyDemo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Policy,
+        [ValidateSet('Reminder', 'RestartPrompt')][string]$Dialog = 'Reminder',
+        [ValidateRange(-1, 2147483647)][int]$MinutesBefore = -1,
+        [string]$LogPath
+    )
+
+    $demoPolicy = $Policy.PSObject.Copy()
+    $demoPolicy.UseToolkitRestartPrompt = $Dialog -eq 'RestartPrompt'
+    if ($Dialog -eq 'RestartPrompt') {
+        $MinutesBefore = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum
+    } elseif ($MinutesBefore -eq -1) {
+        $MinutesBefore = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Maximum).Maximum
+    }
+    if ($MinutesBefore -ne 0 -and $MinutesBefore -notin $Policy.Reminders.MinutesBefore) {
+        throw 'DemoMinutesBefore must match a configured reminder or be 0 for the overdue message.'
+    }
+    $now = [datetimeoffset]::UtcNow
+    $demoBoot = $now.AddHours(-$Policy.RestartAfterHours).AddMinutes($MinutesBefore)
+    $stage = Get-RestartPolicyStage -Policy $demoPolicy -BootTimeUtc $demoBoot -NowUtc $now
+    if ($LogPath) {
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "DEMO: $Dialog, stage $MinutesBefore minutes before deadline. Synthetic timing; real boot and acknowledgement state are not read or changed. No restart will be requested."
+        if ($Dialog -eq 'RestartPrompt') {
+            Write-RestartPolicyDiagnosticLog -Path $LogPath -Message 'DEMO: Static image of the packaged toolkit restart dialog. Countdown timer is disposed before rendering; original buttons are not interactive.'
+        }
+    }
+    $result = Show-RestartPolicyReminder -Policy $demoPolicy -Stage $stage -Demo
+    if ($LogPath) {
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "DEMO result: $result."
+    }
+    return $result
 }
 
 function Write-RestartPolicyDiagnosticLog {
@@ -184,12 +381,16 @@ function Invoke-RestartPolicyPass {
     $statePath = 'HKLM:\SOFTWARE\RestartPolicy'
     $bootId = $BootTimeUtc.ToUniversalTime().ToString('o')
     $lastStage = [int]::MaxValue
+    $stateStatus = 'No acknowledgement for this Windows boot.'
     if (Test-Path -LiteralPath $statePath) {
         $state = Get-ItemProperty -LiteralPath $statePath -ErrorAction Stop
         if ($null -ne $state.PSObject.Properties['BootTimeUtc'] -and $state.BootTimeUtc -eq $bootId) {
             if ($null -ne $state.PSObject.Properties['LastStageMinutes']) {
                 $lastStage = [int]$state.LastStageMinutes
+                $stateStatus = "Acknowledgement matches this Windows boot; last stage: $lastStage minutes before deadline."
             }
+        } else {
+            $stateStatus = 'Stored acknowledgement belongs to another Windows boot or has no boot ID; ignored.'
         }
     }
     $stage = Get-RestartPolicyStage -Policy $Policy -BootTimeUtc $BootTimeUtc -NowUtc $NowUtc -LastStageMinutes $lastStage
@@ -197,6 +398,40 @@ function Invoke-RestartPolicyPass {
         $deadline = $BootTimeUtc.AddHours($Policy.RestartAfterHours)
         $deadlineLocal = $deadline.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
         $bootLocal = $BootTimeUtc.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+        $nowLocal = $NowUtc.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+        $uptimeHours = ($NowUtc - $BootTimeUtc).TotalHours.ToString('F2', [cultureinfo]::InvariantCulture)
+        $remainingMinutes = ($deadline - $NowUtc).TotalMinutes.ToString('F2', [cultureinfo]::InvariantCulture)
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Evaluation: $nowLocal. Uptime: $uptimeHours hours. RestartAfterHours: $($Policy.RestartAfterHours). Remaining: $remainingMinutes minutes (negative = overdue). PollSeconds: $($Policy.PollSeconds)."
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "State: $stateStatus"
+        $allMinutes = @($Policy.Reminders.MinutesBefore | Sort-Object -Descending) + @(0)
+        foreach ($minutes in $allMinutes) {
+            $threshold = $deadline.AddMinutes(-$minutes)
+            $thresholdLocal = $threshold.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz')
+            $reached = $NowUtc -ge $threshold
+            $eligible = $minutes -lt $lastStage
+            $stageStatus = if (-not $eligible) {
+                'AcknowledgedOrSuperseded'
+            } elseif (-not $reached) {
+                'NotReached'
+            } elseif ($null -ne $stage -and $stage.MinutesBefore -eq $minutes) {
+                'Selected'
+            } else {
+                'SupersededByMoreUrgentStage'
+            }
+            Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Stage: $minutes minutes before deadline. Due at: $thresholdLocal. Reached: $reached. Eligible after acknowledgement: $eligible. Status: $stageStatus."
+        }
+        $dialog = if ($null -eq $stage) {
+            'None'
+        } elseif ($Policy.UseToolkitRestartPrompt -and $stage.MinutesBefore -le ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum) {
+            'RestartPrompt'
+        } else {
+            'Reminder'
+        }
+        Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Restart decision: deadline reached: $($NowUtc -ge $deadline). Toolkit restart prompt enabled: $($Policy.UseToolkitRestartPrompt). Selected dialog: $dialog."
+        if ($dialog -eq 'RestartPrompt') {
+            $countdownSeconds = ($Policy.Reminders | Measure-Object -Property MinutesBefore -Minimum).Minimum * 60
+            Write-RestartPolicyDiagnosticLog -Path $LogPath -Message "Restart prompt countdown: $countdownSeconds seconds from dialog launch, not from the deadline. Requires an active session at the policy check; the toolkit can restart silently if that session disappears."
+        }
         if ($null -eq $stage) {
             $nextMinutes = @($Policy.Reminders.MinutesBefore | Where-Object { $_ -lt $lastStage } | Sort-Object -Descending) + @(0)
             if ($lastStage -eq 0) {
@@ -229,4 +464,4 @@ function Invoke-RestartPolicyPass {
     return $result
 }
 
-Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, New-RestartPolicyTaskTrigger, Get-RestartPolicyStage, Show-RestartPolicyReminder, Invoke-RestartPolicyPass, Write-RestartPolicyDiagnosticLog
+Export-ModuleMember -Function Assert-RestartPolicyExecutionContext, Import-RestartPolicy, New-RestartPolicyTaskTrigger, Get-RestartPolicyStage, Show-RestartPolicyReminder, Show-RestartPolicyDemo, Invoke-RestartPolicyPass, Write-RestartPolicyDiagnosticLog
